@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="color-scheme" content="light">
+    <title>Confirmación de tu turno</title>
+</head>
+<body style="margin: 0; padding: 0; width: 100%; background-color: #f8f9fb; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8f9fb;">
+    <tr>
+        <td align="center" style="padding: 40px 16px;">
+
+            <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width: 100%; max-width: 600px; background-color: #ffffff; border: 1px solid #d4e0ed; border-radius: 24px; overflow: hidden;">
+
+                <!-- Barra de marca -->
+                <tr>
+                    <td style="background-color: #0b3558; padding: 22px 32px;">
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                            <tr>
+                                <td align="left" style="font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 20px; font-weight: 700; letter-spacing: -0.2px; color: #ffffff;">Citero</td>
+                                <td align="right">
+                                    <span style="display: inline-block; background-color: #e6f0ff; color: #004eba; font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 600; line-height: 1.5; padding: 4px 12px; border-radius: 9999px;">Turno confirmado</span>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- Encabezado -->
+                <tr>
+                    <td style="padding: 36px 32px 0 32px; font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+                        <p style="margin: 0 0 8px 0; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #006bff;">Confirmación</p>
+                        <h1 style="margin: 0 0 12px 0; font-size: 26px; line-height: 1.3; font-weight: 700; color: #0b3558;">¡Tu turno está confirmado!</h1>
+                        <p style="margin: 0; font-size: 16px; line-height: 1.6; color: #476788;">
+                            Hola <strong style="color: #0b3558;" th:text="${clientName}">Cliente</strong>, te esperamos en <strong style="color: #0b3558;" th:text="${businessName}">Negocio</strong>. Guardá este email como comprobante de tu reserva.
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- Detalles -->
+                <tr>
+                    <td style="padding: 24px 32px 0 32px; font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f0f3f8; border: 1px solid #d4e0ed; border-radius: 16px;">
+                            <tr>
+                                <td style="padding: 22px 24px;">
+                                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                                        <tr>
+                                            <td style="padding: 0 0 14px 0; border-bottom: 1px solid #d4e0ed;">
+                                                <p style="margin: 0 0 3px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #476788;">Fecha y hora</p>
+                                                <p style="margin: 0; font-size: 18px; font-weight: 700; line-height: 1.4; color: #006bff;">
+                                                    <span th:text="${date}">15 de octubre de 2026</span> · <span th:text="${time}">10:00</span> hs
+                                                </p>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 14px 0; border-bottom: 1px solid #d4e0ed;">
+                                                <p style="margin: 0 0 3px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #476788;">Servicio</p>
+                                                <p style="margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: #0b3558;" th:text="${serviceName}">Corte de cabello</p>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 14px 0; border-bottom: 1px solid #d4e0ed;">
+                                                <p style="margin: 0 0 3px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #476788;">Profesional</p>
+                                                <p style="margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: #0b3558;" th:text="${staffName}">Juan Pérez</p>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 14px 0; border-bottom: 1px solid #d4e0ed;">
+                                                <p style="margin: 0 0 3px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #476788;">Dirección del local</p>
+                                                <p style="margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: #0b3558;" th:text="${address}">Av. Siempre Viva 123</p>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 14px 0 0 0;">
+                                                <p style="margin: 0 0 3px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #476788;">Negocio</p>
+                                                <p style="margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: #0b3558;" th:text="${businessName}">Barbería Citero</p>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- CTA -->
+                <tr>
+                    <td align="center" style="padding: 28px 32px 0 32px;">
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                            <tr>
+                                <td align="center" style="background-color: #006bff; border-radius: 8px;">
+                                    <a th:href="${manageUrl}" target="_blank" style="display: inline-block; padding: 14px 28px; font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 8px;">Gestionar o cancelar mi turno</a>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                    <td style="padding: 28px 32px 32px 32px; font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top: 1px solid #d4e0ed;">
+                            <tr>
+                                <td align="center" style="padding-top: 20px;">
+                                    <p style="margin: 0; font-size: 12px; line-height: 1.6; color: #a6bbd1;">Si no solicitaste esta reserva, ignorá este email o contactá directamente al negocio.</p>
+                                    <p style="margin: 8px 0 0 0; font-size: 12px; color: #a6bbd1;">Hecho con <strong style="color: #476788;">Citero</strong> · Gestión de turnos y reservas</p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+            </table>
+
+        </td>
+    </tr>
+</table>
+</body>
+</html>

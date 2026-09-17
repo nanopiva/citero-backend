@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: citero-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: citero
+      POSTGRES_USER: citero
+      POSTGRES_PASSWORD: citero
+    ports:
+      - "5432:5432"
+    volumes:
+      - citero-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citero -d citero"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  citero-postgres-data:
