@@ -27,6 +27,7 @@ public class AuthService {
     private final OtpService otpService;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenService refreshTokenService;
+    private final UserService userService;
 
     /**
      * Resultado interno de una autenticación: access token (para el body), usuario y
@@ -53,6 +54,10 @@ public class AuthService {
         UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
         User user = userRepository.findById(userDetails.getId())
                 .orElseThrow(() -> new BadRequestException("Email o contraseña incorrectos"));
+
+        // Reconcilia invitaciones de staff pendientes para este email: cubre a quien se
+        // registró por su cuenta y a cuentas que ya existían antes de ser invitadas.
+        userService.linkPendingStaff(user);
 
         String accessToken = jwtService.generateTokenFromUserDetails(userDetails);
         RefreshTokenService.RefreshTokenPair refresh = refreshTokenService.issue(user, userAgent, ipAddress);

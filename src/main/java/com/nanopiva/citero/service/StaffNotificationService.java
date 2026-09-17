@@ -32,10 +32,9 @@ public class StaffNotificationService {
      * @param customName     Nombre personalizado (puede ser null).
      * @param businessName   Nombre del negocio que lo invita.
      * @param isRegistered   True si el email ya existe en la tabla de usuarios.
-     * @param invitationToken Token de la invitación (null si el email ya está registrado).
      */
     public void sendStaffInvitation(String email, String customName, String businessName,
-                                    boolean isRegistered, String invitationToken) {
+                                    boolean isRegistered) {
         try {
             // Helper para obtener un nombre legible si no hay customName
             String displayName = (customName != null && !customName.trim().isEmpty())
@@ -60,8 +59,7 @@ public class StaffNotificationService {
                 vars.put("businessName", businessName);
                 vars.put("email", email);
                 vars.put("registerUrl", frontendUrl + "/registro?email="
-                        + URLEncoder.encode(email, StandardCharsets.UTF_8)
-                        + (invitationToken != null ? "&invitacion=" + invitationToken : ""));
+                        + URLEncoder.encode(email, StandardCharsets.UTF_8));
 
                 emailService.sendEmail(
                         email,

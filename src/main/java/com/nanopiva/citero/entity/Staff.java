@@ -38,14 +38,6 @@ public class Staff {
     @Column(name = "custom_name", length = 100)
     private String customName;
 
-    // Invitación pendiente: se vincula al registrarse con este token.
-    @Column(name = "invitation_token", length = 64)
-    @ToString.Exclude
-    private String invitationToken;
-
-    @Column(name = "invitation_expires_at")
-    private java.time.LocalDateTime invitationExpiresAt;
-
     @ManyToMany
     @JoinTable(
             name = "staff_services",

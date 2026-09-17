@@ -1,11 +1,15 @@
 package com.nanopiva.citero.service;
 
 import com.nanopiva.citero.dto.user.LoginRequestDto;
+import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.OtpToken;
+import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.UnauthorizedException;
+import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.OtpTokenRepository;
+import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
@@ -20,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,6 +36,8 @@ class AuthServiceTest extends IntegrationTest {
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private RefreshTokenService refreshTokenService;
     @Autowired private OtpTokenRepository otpTokenRepository;
+    @Autowired private BusinessRepository businessRepository;
+    @Autowired private StaffRepository staffRepository;
 
     // Evita llamadas reales a Resend al generar OTPs.
     @MockitoBean private EmailService emailService;
@@ -68,6 +75,32 @@ class AuthServiceTest extends IntegrationTest {
         assertNotNull(result.refreshToken(), "Debe devolverse un refresh token");
         assertFalse(result.refreshToken().isBlank(), "El refresh token no debe estar vacío");
         assertEquals(email, result.user().getEmail(), "El usuario devuelto debe coincidir");
+    }
+
+    @Test
+    void loginVinculaLaInvitacionDeStaffPendiente() {
+        String email = uniqueEmail("login-invite");
+        User user = createUser(email, "secret123");
+        User owner = createUser(uniqueEmail("login-invite-owner"), "secret123");
+        Business business = businessRepository.save(Business.builder()
+                .owner(owner)
+                .name("Barbería Login")
+                .slug("login-" + System.nanoTime())
+                .build());
+        Staff staff = staffRepository.save(Staff.builder()
+                .business(business)
+                .contactEmail(email)
+                .customName("Ana")
+                .build());
+
+        authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1");
+
+        Staff linked = staffRepository.findById(staff.getId()).orElseThrow();
+        assertNotNull(linked.getUser(), "El login debe vincular una invitación pendiente para una cuenta ya existente");
+        assertEquals(user.getId(), linked.getUser().getId());
+        assertNull(linked.getContactEmail(), "El email de contacto se limpia al vincular");
     }
 
     @Test

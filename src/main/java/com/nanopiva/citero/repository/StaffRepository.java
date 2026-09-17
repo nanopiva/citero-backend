@@ -26,9 +26,7 @@ public interface StaffRepository extends JpaRepository<Staff, Long> {
     boolean existsByUserAndBusiness(User user, Business business);
 
     boolean existsByContactEmailAndBusiness(String contactEmail, Business business);
-    List<Staff> findByContactEmail(String contactEmail);
-
-    Optional<Staff> findByInvitationToken(String invitationToken);
+    List<Staff> findByContactEmailIgnoreCase(String contactEmail);
 
     /**
      * Bloquea (SELECT ... FOR UPDATE) el perfil del empleado para serializar reservas

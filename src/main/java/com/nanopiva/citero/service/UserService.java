@@ -20,7 +20,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -75,36 +74,32 @@ public class UserService {
         user.setPhone(requestDto.getPhone());
         User savedUser = userRepository.save(user);
 
-        linkPendingInvitation(savedUser, requestDto.getInvitationToken());
+        linkPendingStaff(savedUser);
 
         return mapToResponseDto(savedUser);
     }
 
     /**
-     * Si el registro viene con un token de invitación válido, vincula el perfil de staff
-     * pendiente y marca el email como verificado (la invitación prueba que es su correo).
+     * Vincula al usuario con todos los perfiles de staff pendientes que fueron invitados
+     * a su email. Se invoca al registrarse y también en cada login, para que una persona
+     * invitada que se registra por su cuenta (sin abrir el link de la invitación) quede
+     * vinculada igual. La invitación al email prueba que el correo es suyo, por eso la
+     * cuenta también queda marcada como verificada.
      */
-    private void linkPendingInvitation(User user, String invitationToken) {
-        if (invitationToken == null || invitationToken.isBlank()) {
-            return;
-        }
-        staffRepository.findByInvitationToken(invitationToken).ifPresent(staff -> {
-            boolean valid = staff.getUser() == null
-                    && staff.getContactEmail() != null
-                    && staff.getContactEmail().equalsIgnoreCase(user.getEmail())
-                    && staff.getInvitationExpiresAt() != null
-                    && staff.getInvitationExpiresAt().isAfter(LocalDateTime.now());
-            if (valid) {
-                staff.setUser(user);
-                staff.setContactEmail(null);
-                staff.setInvitationToken(null);
-                staff.setInvitationExpiresAt(null);
-                staffRepository.save(staff);
-
-                user.setEmailVerified(true);
-                userRepository.save(user);
+    @Transactional
+    public void linkPendingStaff(User user) {
+        List<Staff> pending = staffRepository.findByContactEmailIgnoreCase(user.getEmail());
+        for (Staff staff : pending) {
+            if (staff.getUser() != null) {
+                continue;
             }
-        });
+            staff.setUser(user);
+            staff.setContactEmail(null);
+            staffRepository.save(staff);
+
+            user.setEmailVerified(true);
+            userRepository.save(user);
+        }
     }
 
     @Transactional(readOnly = true)

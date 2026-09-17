@@ -87,7 +87,7 @@ class StaffServiceTest extends IntegrationTest {
 
         assertFalse(response.isHasClaimedAccount(), "Un email sin cuenta genera un perfil huérfano");
         assertEquals(email, response.getUserEmail(), "El email de contacto debe exponerse como userEmail");
-        verify(staffNotificationService).sendStaffInvitation(eq(email), eq("Ana"), eq(business.getName()), eq(false), anyString());
+        verify(staffNotificationService).sendStaffInvitation(eq(email), eq("Ana"), eq(business.getName()), eq(false));
     }
 
     @Test
@@ -101,7 +101,7 @@ class StaffServiceTest extends IntegrationTest {
 
         assertTrue(response.isHasClaimedAccount(), "Un email registrado se vincula a la cuenta");
         assertEquals(member.getEmail(), response.getUserEmail());
-        verify(staffNotificationService).sendStaffInvitation(eq(member.getEmail()), eq("Beto"), eq(business.getName()), eq(true), any());
+        verify(staffNotificationService).sendStaffInvitation(eq(member.getEmail()), eq("Beto"), eq(business.getName()), eq(true));
     }
 
     @Test
@@ -113,7 +113,7 @@ class StaffServiceTest extends IntegrationTest {
                 StaffCreateRequestDto.builder().email(owner.getEmail()).customName("Dueño").build());
 
         assertTrue(response.isHasClaimedAccount(), "El dueño ya tiene cuenta y queda vinculado");
-        verify(staffNotificationService, never()).sendStaffInvitation(anyString(), any(), anyString(), anyBoolean(), any());
+        verify(staffNotificationService, never()).sendStaffInvitation(anyString(), any(), anyString(), anyBoolean());
     }
 
     @Test

@@ -20,18 +20,14 @@ import com.nanopiva.citero.util.StaffUtils;
 
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @org.springframework.stereotype.Service
 public class StaffService {
-
-    private static final int INVITATION_VALID_DAYS = 7;
 
     private final StaffRepository staffRepository;
     private final BusinessRepository businessRepository;
@@ -74,7 +70,6 @@ public class StaffService {
         boolean isOwnerSelf = isRegistered
                 && business.getOwner().getId().equals(existingUser.get().getId());
 
-        String invitationToken = null;
         if (isRegistered) {
             if (staffRepository.existsByUserAndBusiness(existingUser.get(), business)) {
                 throw new DuplicateResourceException("El usuario ya está registrado como empleado en este local.");
@@ -85,9 +80,6 @@ public class StaffService {
                 throw new DuplicateResourceException("Ya existe un perfil pendiente con este correo en el local.");
             }
             staff.setContactEmail(requestDto.getEmail());
-            invitationToken = UUID.randomUUID().toString();
-            staff.setInvitationToken(invitationToken);
-            staff.setInvitationExpiresAt(LocalDateTime.now().plusDays(INVITATION_VALID_DAYS));
         }
 
         if (requestDto.getServiceIds() != null && !requestDto.getServiceIds().isEmpty()) {
@@ -104,8 +96,7 @@ public class StaffService {
                     requestDto.getEmail(),
                     requestDto.getCustomName(),
                     business.getName(),
-                    isRegistered,
-                    invitationToken
+                    isRegistered
             );
         }
 
@@ -174,8 +165,7 @@ public class StaffService {
     }
 
     /**
-     * Reenvía la invitación a un profesional que todavía no creó su cuenta, regenerando el
-     * token (por si el anterior venció).
+     * Reenvía la invitación a un profesional que todavía no creó su cuenta.
      */
     @Transactional
     public void resendInvitation(Long staffId, Long ownerId) {
@@ -189,13 +179,8 @@ public class StaffService {
             throw new BadRequestException("Este profesional ya tiene una cuenta vinculada.");
         }
 
-        String token = UUID.randomUUID().toString();
-        staff.setInvitationToken(token);
-        staff.setInvitationExpiresAt(LocalDateTime.now().plusDays(INVITATION_VALID_DAYS));
-        staffRepository.save(staff);
-
         staffNotificationService.sendStaffInvitation(
-                staff.getContactEmail(), staff.getCustomName(), staff.getBusiness().getName(), false, token);
+                staff.getContactEmail(), staff.getCustomName(), staff.getBusiness().getName(), false);
     }
 
     @Transactional

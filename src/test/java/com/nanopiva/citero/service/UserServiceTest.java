@@ -19,8 +19,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -136,39 +134,51 @@ class UserServiceTest extends IntegrationTest {
     }
 
     @Test
-    void registerConTokenDeInvitacionVinculaElStaff() {
+    void registerVinculaElStaffInvitadoPorEmail() {
         String email = uniqueEmail("invite");
-        Staff orphan = orphanStaff(email, LocalDateTime.now().plusDays(7));
+        Staff orphan = orphanStaff(email);
 
         userService.register(RegisterRequestDto.builder()
                 .email(email)
                 .password("secret123")
-                .invitationToken(orphan.getInvitationToken())
                 .build());
 
         Staff linked = staffRepository.findById(orphan.getId()).orElseThrow();
-        assertNotNull(linked.getUser(), "Con un token válido el staff debe quedar vinculado");
+        assertNotNull(linked.getUser(), "Debe vincularse por email aunque no se use el link de la invitación");
         assertEquals(email, linked.getUser().getEmail());
         assertNull(linked.getContactEmail(), "El email de contacto se limpia al vincular");
         assertTrue(linked.getUser().getEmailVerified(), "La invitación verifica el email");
     }
 
     @Test
-    void registerConTokenVencidoNoVincula() {
-        String email = uniqueEmail("invite-expired");
-        Staff orphan = orphanStaff(email, LocalDateTime.now().minusDays(1));
+    void registerVinculaStaffAunqueElEmailCambieDeMayusculas() {
+        String email = uniqueEmail("invite-case");
+        Staff orphan = orphanStaff(email);
 
         userService.register(RegisterRequestDto.builder()
-                .email(email)
+                .email(email.toUpperCase())
                 .password("secret123")
-                .invitationToken(orphan.getInvitationToken())
                 .build());
 
-        assertNull(staffRepository.findById(orphan.getId()).orElseThrow().getUser(),
-                "Un token vencido no debe vincular");
+        assertNotNull(staffRepository.findById(orphan.getId()).orElseThrow().getUser(),
+                "La vinculación por email no distingue mayúsculas");
     }
 
-    private Staff orphanStaff(String email, LocalDateTime expiresAt) {
+    @Test
+    void linkPendingStaffVinculaUnaCuentaYaExistente() {
+        String email = uniqueEmail("invite-existing");
+        User user = persistUser(email, "secret123");
+        Staff orphan = orphanStaff(email);
+
+        userService.linkPendingStaff(user);
+
+        Staff linked = staffRepository.findById(orphan.getId()).orElseThrow();
+        assertEquals(user.getId(), linked.getUser().getId(),
+                "Una cuenta ya registrada debe vincularse al reconciliar la invitación");
+        assertTrue(user.getEmailVerified(), "La invitación verifica el email");
+    }
+
+    private Staff orphanStaff(String email) {
         User owner = persistUser(uniqueEmail("owner-invite"), "secret123");
         Business business = businessRepository.save(Business.builder()
                 .owner(owner)
@@ -179,8 +189,6 @@ class UserServiceTest extends IntegrationTest {
                 .business(business)
                 .contactEmail(email)
                 .customName("Juan")
-                .invitationToken("token-" + System.nanoTime())
-                .invitationExpiresAt(expiresAt)
                 .build());
     }
 

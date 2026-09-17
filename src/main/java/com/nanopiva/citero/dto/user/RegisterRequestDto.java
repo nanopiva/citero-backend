@@ -24,7 +24,4 @@ public class RegisterRequestDto {
 
     @Size(max = 20)
     private String phone;
-
-    // Token de invitación de staff (opcional): vincula el perfil al registrarse.
-    private String invitationToken;
 }
