@@ -313,7 +313,7 @@ public class AppointmentService {
                                                         Pageable pageable) {
         Business business = businessRepository.findById(businessId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
-        if (!business.getOwner().getId().equals(userId)) {
+        if (!business.getOwner().getId().equals(userId) && !isStaffOf(userId, business)) {
             throw new ForbiddenException("No tienes permiso para ver la agenda de este negocio.");
         }
         if (staffId != null) {
@@ -328,6 +328,16 @@ public class AppointmentService {
         return appointmentRepository.searchByBusiness(
                         businessId, staffId != null, staffId, start, end, status != null, status, pageable)
                 .map(this::mapToResponseDto);
+    }
+
+    /**
+     * Indica si el usuario pertenece al equipo del negocio. El dueño y el staff pueden
+     * consultar la agenda completa del local.
+     */
+    private boolean isStaffOf(Long userId, Business business) {
+        return userRepository.findById(userId)
+                .flatMap(user -> staffRepository.findByUserAndBusiness(user, business))
+                .isPresent();
     }
 
     @Transactional(readOnly = true)

@@ -274,6 +274,24 @@ class AppointmentServiceTest extends IntegrationTest {
     }
 
     @Test
+    void staffPuedeConsultarLaAgendaCompletaDelNegocio() {
+        Business business = newBusiness("staff-agenda", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        User staffUser = newUser("staff-agenda-user");
+        Staff staff = newStaff(business, service);
+        staff.setUser(staffUser);
+        staffRepository.save(staff);
+        User client = newUser("client-staff-agenda");
+        newAppointment(client, staff, service, futureSlot(1, 10), Appointment.AppointmentStatus.CONFIRMED);
+
+        List<AppointmentResponseDto> agenda = appointmentService
+                .getAppointments(staffUser.getId(), business.getId(), null, null, null, Pageable.unpaged())
+                .getContent();
+
+        assertEquals(1, agenda.size(), "El staff debe poder ver la agenda completa del negocio");
+    }
+
+    @Test
     void listadosFiltranPorClienteNegocioYStaff() {
         Business business = newBusiness("list", 24);
         com.nanopiva.citero.entity.Service service = newService(business);
