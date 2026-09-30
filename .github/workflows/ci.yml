@@ -46,6 +46,6 @@ jobs:
       # Revisa las dependencias agregadas/actualizadas en el PR contra la GitHub
       # Advisory Database (no requiere NVD API key). Falla en severidad high/critical.
       - name: Dependency review
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
