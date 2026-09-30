@@ -70,11 +70,24 @@ class BusinessConfigControllerTest extends IntegrationTest {
     }
 
     @Test
-    void getConfigIsPublicAndReturnsDefaults() throws Exception {
+    void getConfigIsPublicAndOnlyReturnsReservationMode() throws Exception {
         User owner = persistUser("get");
         Business business = seedBusiness(owner, uniqueSlug("bccc-get"));
 
         mockMvc.perform(get("/api/businesses/" + business.getId() + "/config"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reservationMode").value("PUBLIC"))
+                .andExpect(jsonPath("$.maxStrikes").doesNotExist())
+                .andExpect(jsonPath("$.cancellationToleranceHours").doesNotExist());
+    }
+
+    @Test
+    void getConfigAsOwnerReturnsFullConfig() throws Exception {
+        User owner = persistUser("get-owner");
+        Business business = seedBusiness(owner, uniqueSlug("bccc-get-owner"));
+
+        mockMvc.perform(get("/api/businesses/" + business.getId() + "/config")
+                        .header("Authorization", bearer(owner)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.reservationMode").value("PUBLIC"))
                 .andExpect(jsonPath("$.maxStrikes").value(3));

@@ -76,7 +76,7 @@ class BusinessControllerTest extends IntegrationTest {
                         .content("{\"name\":\"Barbería\",\"slug\":\"" + slug + "\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.slug").value(slug))
-                .andExpect(jsonPath("$.config.reservationMode").value("PUBLIC"));
+                .andExpect(jsonPath("$.name").value("Barbería"));
 
         mockMvc.perform(get("/api/businesses/" + slug))
                 .andExpect(status().isOk())

@@ -4,16 +4,19 @@ import com.nanopiva.citero.dto.appointment.AvailabilityResponseDto;
 import com.nanopiva.citero.entity.*;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.exception.TooManyRequestsException;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
-import com.nanopiva.citero.repository.BusinessScheduleRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.security.RateLimitStore;
 import com.nanopiva.citero.util.BusinessTime;
 import com.nanopiva.citero.util.StaffUtils;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -27,25 +30,37 @@ import java.util.stream.Collectors;
 public class AvailabilityService {
 
     private final BusinessRepository businessRepository;
-    private final BusinessScheduleRepository scheduleRepository;
+    private final BusinessScheduleService scheduleService;
     private final ServiceRepository serviceRepository;
     private final StaffRepository staffRepository;
     private final AppointmentRepository appointmentRepository;
+    private final RateLimitStore rateLimitStore;
+
+    @Value("${citero.rate-limit.availability-global-per-minute:1200}")
+    private int availabilityGlobalPerMinute;
 
     public AvailabilityService(BusinessRepository businessRepository,
-                               BusinessScheduleRepository scheduleRepository,
+                               BusinessScheduleService scheduleService,
                                ServiceRepository serviceRepository,
                                StaffRepository staffRepository,
-                               AppointmentRepository appointmentRepository) {
+                               AppointmentRepository appointmentRepository,
+                               RateLimitStore rateLimitStore) {
         this.businessRepository = businessRepository;
-        this.scheduleRepository = scheduleRepository;
+        this.scheduleService = scheduleService;
         this.serviceRepository = serviceRepository;
         this.staffRepository = staffRepository;
         this.appointmentRepository = appointmentRepository;
+        this.rateLimitStore = rateLimitStore;
     }
 
     @Transactional(readOnly = true)
     public AvailabilityResponseDto getAvailableSlots(Long businessId, Long serviceId, Long staffId, LocalDate date) {
+        // Cap global (no por IP) del cálculo de disponibilidad.
+        if (!rateLimitStore.tryConsume("availability-global", availabilityGlobalPerMinute, Duration.ofMinutes(1))) {
+            throw new TooManyRequestsException(
+                    "El servicio está saturado. Esperá un momento e intentá de nuevo.");
+        }
+
         Business business = businessRepository.findById(businessId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
 
@@ -56,10 +71,10 @@ public class AvailabilityService {
             throw new BadRequestException("El servicio no pertenece a este negocio.");
         }
 
-        DailyHours hours = resolveDailyHours(business, date);
+        BusinessScheduleService.EffectiveSchedule effective = scheduleService.resolveEffective(business, date);
 
         // Si el día está cerrado, devolvemos lista vacía sin lanzar 404.
-        if (hours.closed()) {
+        if (effective.closed()) {
             return AvailabilityResponseDto.builder()
                     .date(date)
                     .availableSlots(new ArrayList<>())
@@ -79,7 +94,7 @@ public class AvailabilityService {
 
         List<LocalTime> availableSlots = calculateAvailableSlots(
                 business,
-                hours,
+                effective,
                 service.getDurationMinutes(),
                 staffToCheck,
                 date
@@ -146,30 +161,26 @@ public class AvailabilityService {
         }
 
         LocalDate date = startTime.toLocalDate();
-        DailyHours hours = resolveDailyHours(business, date);
+        BusinessScheduleService.EffectiveSchedule effective = scheduleService.resolveEffective(business, date);
 
-        if (hours.closed()) {
+        if (effective.closed()) {
             throw new BadRequestException("El negocio no atiende ese día.");
         }
 
-        LocalTime openTime = hours.open();
-        LocalTime closeTime = hours.close();
         LocalTime slotTime = startTime.toLocalTime();
+        LocalTime slotEndTime = startTime.plusMinutes(service.getDurationMinutes()).toLocalTime();
 
-        if (slotTime.isBefore(openTime)) {
-            throw new BadRequestException("El horario seleccionado está fuera del horario de atención.");
-        }
+        // El turno debe entrar completo dentro de una misma franja (no puede cruzar un hueco).
+        BusinessScheduleService.TimeRange range = effective.ranges().stream()
+                .filter(r -> !slotTime.isBefore(r.open()) && !slotEndTime.isAfter(r.close()))
+                .findFirst()
+                .orElseThrow(() -> new BadRequestException(
+                        "El horario seleccionado está fuera del horario de atención."));
 
-        // La grilla de turnos arranca en la hora de apertura y avanza cada 15 minutos.
-        long minutesFromOpen = java.time.Duration.between(openTime, slotTime).toMinutes();
+        // La grilla de turnos arranca en la apertura de la franja y avanza cada 15 minutos.
+        long minutesFromOpen = java.time.Duration.between(range.open(), slotTime).toMinutes();
         if (minutesFromOpen % 15 != 0) {
             throw new BadRequestException("El horario debe estar alineado a la grilla de 15 minutos.");
-        }
-
-        LocalDateTime slotEnd = startTime.plusMinutes(service.getDurationMinutes());
-        LocalDateTime closeDateTime = LocalDateTime.of(date, closeTime);
-        if (slotEnd.isAfter(closeDateTime)) {
-            throw new BadRequestException("El turno no entra dentro del horario de atención.");
         }
     }
 
@@ -230,57 +241,6 @@ public class AvailabilityService {
         return selected;
     }
 
-    private BusinessSchedule getScheduleForDate(Business business, LocalDate date) {
-        String dayOfWeek = date.getDayOfWeek().name();
-
-        return scheduleRepository.findByBusiness(business).stream()
-                .filter(schedule -> schedule.getDayOfWeek().name().equals(dayOfWeek))
-                .findFirst()
-                .orElse(null); // Retorna null en lugar de lanzar excepción
-    }
-
-    /**
-     * Resuelve el horario de atención efectivo para un día.
-     *
-     * <p>Prioridad:</p>
-     * <ol>
-     *   <li>Si existe un {@link BusinessSchedule} para ese día, se usa (y si está marcado
-     *       como cerrado, el día queda cerrado).</li>
-     *   <li>Si no existe, se cae a los valores por defecto de la configuración del negocio
-     *       ({@code defaultOpeningTime} / {@code defaultClosingTime}).</li>
-     * </ol>
-     *
-     * @return un {@link DailyHours} con {@code closed = true} si no hay atención disponible.
-     */
-    private DailyHours resolveDailyHours(Business business, LocalDate date) {
-        BusinessSchedule schedule = getScheduleForDate(business, date);
-
-        if (schedule != null) {
-            if (Boolean.TRUE.equals(schedule.getIsClosed())) {
-                return new DailyHours(null, null, true);
-            }
-            return new DailyHours(schedule.getOpenTime(), schedule.getCloseTime(), false);
-        }
-
-        // Sin BusinessSchedule para el día: usar los valores por defecto de la config.
-        BusinessConfig config = business.getConfig();
-        if (config != null
-                && config.getDefaultOpeningTime() != null
-                && config.getDefaultClosingTime() != null) {
-            return new DailyHours(config.getDefaultOpeningTime(), config.getDefaultClosingTime(), false);
-        }
-
-        // Sin horario para el día ni valores por defecto: se considera cerrado.
-        return new DailyHours(null, null, true);
-    }
-
-    /**
-     * Horario de atención efectivo de un día. {@code closed = true} indica que el negocio
-     * no atiende (día cerrado explícitamente o sin horario configurable).
-     */
-    private record DailyHours(LocalTime open, LocalTime close, boolean closed) {
-    }
-
     private List<Staff> getStaffToCheck(Business business, Service service, Long staffId) {
         if (staffId != null) {
             Staff staff = staffRepository.findById(staffId)
@@ -303,15 +263,13 @@ public class AvailabilityService {
 
     private List<LocalTime> calculateAvailableSlots(
             Business business,
-            DailyHours hours,
+            BusinessScheduleService.EffectiveSchedule effective,
             int durationMinutes,
             List<Staff> staffToCheck,
             LocalDate date
     ) {
         List<LocalTime> availableSlots = new ArrayList<>();
 
-        LocalTime openTime = hours.open();
-        LocalTime closeTime = hours.close();
         LocalDateTime now = BusinessTime.now(business);
 
         // Se cargan una sola vez los turnos confirmados del día de todos los profesionales
@@ -324,26 +282,28 @@ public class AvailabilityService {
                 .stream()
                 .collect(Collectors.groupingBy(appointment -> appointment.getStaff().getId()));
 
-        LocalTime currentSlot = openTime;
-        while (currentSlot.plusMinutes(durationMinutes).isBefore(closeTime) ||
-                currentSlot.plusMinutes(durationMinutes).equals(closeTime)) {
+        // Se recorre cada franja por separado: la grilla arranca en la apertura de cada
+        // franja y nunca se ofrecen turnos en los huecos entre franjas.
+        for (BusinessScheduleService.TimeRange range : effective.ranges()) {
+            LocalTime currentSlot = range.open();
+            while (!currentSlot.plusMinutes(durationMinutes).isAfter(range.close())) {
+                LocalDateTime slotStart = LocalDateTime.of(date, currentSlot);
 
-            LocalDateTime slotStart = LocalDateTime.of(date, currentSlot);
+                // No ofrecer horarios que ya pasaron (ni el que empieza justo ahora).
+                if (slotStart.isAfter(now)) {
+                    LocalDateTime slotEnd = slotStart.plusMinutes(durationMinutes);
 
-            // No ofrecer horarios que ya pasaron (ni el que empieza justo ahora).
-            if (slotStart.isAfter(now)) {
-                LocalDateTime slotEnd = slotStart.plusMinutes(durationMinutes);
+                    boolean isAvailable = staffToCheck.stream()
+                            .anyMatch(staff -> !hasConflict(
+                                    confirmedByStaff.getOrDefault(staff.getId(), List.of()), slotStart, slotEnd));
 
-                boolean isAvailable = staffToCheck.stream()
-                        .anyMatch(staff -> !hasConflict(
-                                confirmedByStaff.getOrDefault(staff.getId(), List.of()), slotStart, slotEnd));
-
-                if (isAvailable) {
-                    availableSlots.add(currentSlot);
+                    if (isAvailable) {
+                        availableSlots.add(currentSlot);
+                    }
                 }
-            }
 
-            currentSlot = currentSlot.plusMinutes(15);
+                currentSlot = currentSlot.plusMinutes(15);
+            }
         }
 
         return availableSlots;

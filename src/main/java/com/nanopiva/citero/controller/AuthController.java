@@ -6,9 +6,9 @@ import com.nanopiva.citero.dto.user.LoginRequestDto;
 import com.nanopiva.citero.dto.user.RegisterRequestDto;
 import com.nanopiva.citero.dto.user.ResetPasswordRequestDto;
 import com.nanopiva.citero.exception.UnauthorizedException;
+import com.nanopiva.citero.security.ClientIpResolver;
 import com.nanopiva.citero.service.AuthCookieService;
 import com.nanopiva.citero.service.AuthService;
-import com.nanopiva.citero.service.UserService;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -23,21 +23,26 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class AuthController {
 
-    private final UserService userService;
     private final AuthService authService;
     private final AuthCookieService authCookieService;
+    private final ClientIpResolver clientIpResolver;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponseDto> register(@Valid @RequestBody RegisterRequestDto requestDto,
                                                     HttpServletRequest request,
                                                     HttpServletResponse response) {
-        userService.register(requestDto);
-        AuthService.AuthResult result = authService.login(
-                new LoginRequestDto(requestDto.getEmail(), requestDto.getPassword()),
-                userAgent(request),
-                clientIp(request));
+        AuthService.AuthResult result = authService.register(requestDto, userAgent(request), clientIp(request));
         authCookieService.setRefreshCookie(response, result.refreshToken());
         return ResponseEntity.status(HttpStatus.CREATED).body(toResponseDto(result));
+    }
+
+    /**
+     * Envía el código (OTP) para verificar el email durante el registro.
+     */
+    @PostMapping("/register/request-otp")
+    public ResponseEntity<Void> requestRegisterOtp(@Valid @RequestBody ForgotPasswordRequestDto requestDto) {
+        authService.requestRegistrationOtp(requestDto.getEmail());
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/login")
@@ -110,8 +115,8 @@ public class AuthController {
     }
 
     private String clientIp(HttpServletRequest request) {
-        // Con server.forward-headers-strategy=framework, getRemoteAddr() ya resuelve
-        // X-Forwarded-For cuando el proxy es de confianza (evita confiar en el header crudo).
-        return request.getRemoteAddr();
+        // Resuelve la IP real desde X-Forwarded-For tomando el valor que dejó el proxy
+        // de confianza (no el left-most, que puede venir falsificado por el cliente).
+        return clientIpResolver.resolve(request);
     }
 }

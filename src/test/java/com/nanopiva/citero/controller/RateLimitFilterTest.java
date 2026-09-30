@@ -76,4 +76,26 @@ class RateLimitFilterTest extends IntegrationTest {
                         .content(body))
                 .andExpect(status().isTooManyRequests());
     }
+
+    @Test
+    void envioDeOtpDeCancelacionSeBloqueaAlSuperarElLimitePorIp() throws Exception {
+        String ip = "198.51.100.12";
+
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(post("/api/appointments/public/999/send-cancellation-otp")
+                    .param("email", "ratelimit-cancel@test.com")
+                    .with(request -> {
+                        request.setRemoteAddr(ip);
+                        return request;
+                    }));
+        }
+
+        mockMvc.perform(post("/api/appointments/public/999/send-cancellation-otp")
+                        .param("email", "ratelimit-cancel@test.com")
+                        .with(request -> {
+                            request.setRemoteAddr(ip);
+                            return request;
+                        }))
+                .andExpect(status().isTooManyRequests());
+    }
 }

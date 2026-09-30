@@ -27,6 +27,8 @@ class JwtServiceTest {
     private static final String OTHER_SECRET =
             "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg==";
     private static final long TTL_MS = 900_000L;
+    private static final String ISSUER = "citero";
+    private static final String AUDIENCE = "citero-app";
 
     private JwtService jwtService;
 
@@ -36,9 +38,15 @@ class JwtServiceTest {
     }
 
     private JwtService newJwtService(String secret, long ttlMs) {
+        return newJwtService(secret, ttlMs, ISSUER, AUDIENCE);
+    }
+
+    private JwtService newJwtService(String secret, long ttlMs, String issuer, String audience) {
         JwtService service = new JwtService();
         ReflectionTestUtils.setField(service, "jwtSecret", secret);
         ReflectionTestUtils.setField(service, "jwtExpirationMs", ttlMs);
+        ReflectionTestUtils.setField(service, "issuer", issuer);
+        ReflectionTestUtils.setField(service, "audience", audience);
         return service;
     }
 
@@ -102,5 +110,18 @@ class JwtServiceTest {
 
         assertFalse(jwtService.validateToken(token),
                 "Un token firmado con otro secreto debe rechazarse devolviendo false");
+    }
+
+    @Test
+    void tokenConOtroIssuerOAudienceEsRechazado() {
+        UserDetailsImpl details = userDetails(5L, "contexto@test.com");
+
+        String otherIssuer = newJwtService(SECRET, TTL_MS, "otro-emisor", AUDIENCE)
+                .generateTokenFromUserDetails(details);
+        String otherAudience = newJwtService(SECRET, TTL_MS, ISSUER, "otra-app")
+                .generateTokenFromUserDetails(details);
+
+        assertFalse(jwtService.validateToken(otherIssuer), "Otro issuer debe rechazarse");
+        assertFalse(jwtService.validateToken(otherAudience), "Otra audience debe rechazarse");
     }
 }

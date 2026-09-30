@@ -81,6 +81,24 @@ public class GlobalExceptionHandler {
      * Atrapa UnauthorizedException → HTTP 401
      * Se lanza cuando la sesión/credenciales no son válidas (p. ej. refresh token inválido o revocado).
      */
+    /**
+     * Atrapa TooManyRequestsException → HTTP 429 Too Many Requests.
+     * Se lanza cuando se supera un límite de tasa (reservas por email/negocio, etc.).
+     */
+    @ExceptionHandler(TooManyRequestsException.class)
+    public ResponseEntity<ErrorResponseDto> handleTooManyRequests(
+            TooManyRequestsException ex,
+            HttpServletRequest request) {
+
+        ErrorResponseDto error = buildError(
+                HttpStatus.TOO_MANY_REQUESTS,
+                ex.getMessage(),
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(error);
+    }
+
     @ExceptionHandler(UnauthorizedException.class)
     public ResponseEntity<ErrorResponseDto> handleUnauthorized(
             UnauthorizedException ex,

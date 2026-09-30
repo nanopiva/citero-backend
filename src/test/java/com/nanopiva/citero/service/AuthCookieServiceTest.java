@@ -6,6 +6,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -76,5 +77,24 @@ class AuthCookieServiceTest {
     @Test
     void getCookieNameDevuelveElNombreConfigurado() {
         assertEquals("citero_refresh", cookieService(false).getCookieName());
+    }
+
+    @Test
+    void sameSiteNoneExigeSecure() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        new AuthCookieService("citero_refresh", true, "none", "", "/api/auth", TTL_MS)
+                .setRefreshCookie(response, "raw-token");
+
+        assertTrue(response.getHeader("Set-Cookie").contains("SameSite=None"),
+                "SameSite=None debe normalizarse y emitirse");
+        assertThrows(IllegalStateException.class,
+                () -> new AuthCookieService("citero_refresh", false, "None", "", "/api/auth", TTL_MS),
+                "SameSite=None sin Secure debe rechazarse");
+    }
+
+    @Test
+    void sameSiteInvalidoEsRechazado() {
+        assertThrows(IllegalStateException.class,
+                () -> new AuthCookieService("citero_refresh", false, "Weird", "", "/api/auth", TTL_MS));
     }
 }

@@ -5,14 +5,14 @@ import com.nanopiva.citero.dto.business.BusinessResponseDto;
 import com.nanopiva.citero.dto.business.BusinessUpdateDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.BusinessConfig;
-import com.nanopiva.citero.entity.BusinessSchedule;
+import com.nanopiva.citero.entity.BusinessScheduleDay;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.DuplicateResourceException;
 import com.nanopiva.citero.exception.ForbiddenException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
 import com.nanopiva.citero.repository.BusinessRepository;
-import com.nanopiva.citero.repository.BusinessScheduleRepository;
+import com.nanopiva.citero.repository.BusinessScheduleDayRepository;
 import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,7 @@ class BusinessServiceTest extends IntegrationTest {
     @Autowired private BusinessService businessService;
     @Autowired private UserRepository userRepository;
     @Autowired private BusinessRepository businessRepository;
-    @Autowired private BusinessScheduleRepository scheduleRepository;
+    @Autowired private BusinessScheduleDayRepository scheduleDayRepository;
 
     private User persistUser(String tag) {
         return userRepository.save(User.builder()
@@ -75,16 +75,18 @@ class BusinessServiceTest extends IntegrationTest {
                 owner.getId(), BusinessCreateRequestDto.builder().name("Barbería Seed").slug(slug).build());
 
         assertNotNull(response.getId(), "El negocio debe persistirse con un ID");
-        assertNotNull(response.getConfig(), "El negocio debe crearse con configuración por defecto");
-        assertEquals("PUBLIC", response.getConfig().getReservationMode(), "El modo de reserva por defecto es PUBLIC");
-        assertEquals(24, response.getConfig().getCancellationToleranceHours(), "La tolerancia por defecto es 24 horas");
-        assertEquals(Boolean.TRUE, response.getConfig().getEnablePenalties(), "Las sanciones vienen habilitadas");
-        assertEquals(3, response.getConfig().getMaxStrikes(), "El máximo de strikes por defecto es 3");
-        assertEquals(LocalTime.of(9, 0), response.getConfig().getDefaultOpeningTime(), "La apertura por defecto es 09:00");
-        assertEquals(LocalTime.of(18, 0), response.getConfig().getDefaultClosingTime(), "El cierre por defecto es 18:00");
 
         Business saved = businessRepository.findById(response.getId()).orElseThrow();
-        assertEquals(7, scheduleRepository.findByBusiness(saved).size(),
+        assertNotNull(saved.getConfig(), "El negocio debe crearse con configuración por defecto");
+        assertEquals(BusinessConfig.ReservationMode.PUBLIC, saved.getConfig().getReservationMode(),
+                "El modo de reserva por defecto es PUBLIC");
+        assertEquals(24, saved.getConfig().getCancellationToleranceHours(), "La tolerancia por defecto es 24 horas");
+        assertEquals(Boolean.TRUE, saved.getConfig().getEnablePenalties(), "Las sanciones vienen habilitadas");
+        assertEquals(3, saved.getConfig().getMaxStrikes(), "El máximo de strikes por defecto es 3");
+        assertEquals(LocalTime.of(9, 0), saved.getConfig().getDefaultOpeningTime(), "La apertura por defecto es 09:00");
+        assertEquals(LocalTime.of(18, 0), saved.getConfig().getDefaultClosingTime(), "El cierre por defecto es 18:00");
+
+        assertEquals(7, scheduleDayRepository.findByBusinessAndDayOfWeekIsNotNull(saved).size(),
                 "Se debe sembrar un horario por cada día de la semana");
     }
 
@@ -142,15 +144,15 @@ class BusinessServiceTest extends IntegrationTest {
                 owner.getId(), BusinessCreateRequestDto.builder().name("A borrar").slug(slug).build());
 
         Business saved = businessRepository.findById(created.getId()).orElseThrow();
-        List<Long> scheduleIds = scheduleRepository.findByBusiness(saved).stream()
-                .map(BusinessSchedule::getId)
+        List<Long> scheduleIds = scheduleDayRepository.findByBusinessAndDayOfWeekIsNotNull(saved).stream()
+                .map(BusinessScheduleDay::getId)
                 .toList();
 
         businessService.deleteBusiness(created.getId(), owner.getId());
         businessRepository.flush();
 
         assertTrue(businessRepository.findById(created.getId()).isEmpty(), "El negocio debe eliminarse");
-        assertTrue(scheduleIds.stream().allMatch(id -> scheduleRepository.findById(id).isEmpty()),
+        assertTrue(scheduleIds.stream().allMatch(id -> scheduleDayRepository.findById(id).isEmpty()),
                 "Los horarios del negocio deben eliminarse en cascada");
     }
 

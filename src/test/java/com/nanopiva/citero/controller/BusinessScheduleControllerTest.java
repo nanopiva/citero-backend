@@ -2,10 +2,11 @@ package com.nanopiva.citero.controller;
 
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.BusinessConfig;
-import com.nanopiva.citero.entity.BusinessSchedule;
+import com.nanopiva.citero.entity.BusinessScheduleDay;
+import com.nanopiva.citero.entity.BusinessSchedulePeriod;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.repository.BusinessRepository;
-import com.nanopiva.citero.repository.BusinessScheduleRepository;
+import com.nanopiva.citero.repository.BusinessScheduleDayRepository;
 import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.security.UserDetailsImpl;
 import com.nanopiva.citero.security.jwt.JwtService;
@@ -16,6 +17,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.LocalDate;
 import java.time.LocalTime;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -30,7 +32,7 @@ class BusinessScheduleControllerTest extends IntegrationTest {
     @Autowired private JwtService jwtService;
     @Autowired private UserRepository userRepository;
     @Autowired private BusinessRepository businessRepository;
-    @Autowired private BusinessScheduleRepository scheduleRepository;
+    @Autowired private BusinessScheduleDayRepository scheduleDayRepository;
 
     private User persistUser(String tag) {
         return userRepository.save(User.builder()
@@ -65,38 +67,58 @@ class BusinessScheduleControllerTest extends IntegrationTest {
         return businessRepository.save(business);
     }
 
-    private void seedSchedule(Business business, BusinessSchedule.DayOfWeek day) {
-        scheduleRepository.save(BusinessSchedule.builder()
+    private void seedSchedule(Business business, BusinessScheduleDay.DayOfWeek day) {
+        BusinessScheduleDay scheduleDay = BusinessScheduleDay.builder()
                 .business(business)
                 .dayOfWeek(day)
+                .isClosed(false)
+                .build();
+        scheduleDay.getPeriods().add(BusinessSchedulePeriod.builder()
+                .scheduleDay(scheduleDay)
                 .openTime(LocalTime.of(9, 0))
                 .closeTime(LocalTime.of(18, 0))
-                .isClosed(false)
                 .build());
+        scheduleDayRepository.save(scheduleDay);
     }
 
     @Test
     void getScheduleReturnsPersistedSchedules() throws Exception {
         User owner = persistUser("get");
         Business business = seedBusiness(owner, uniqueSlug("bscc-get"));
-        seedSchedule(business, BusinessSchedule.DayOfWeek.MONDAY);
+        seedSchedule(business, BusinessScheduleDay.DayOfWeek.MONDAY);
 
         mockMvc.perform(get("/api/businesses/" + business.getId() + "/schedules")
                         .header("Authorization", bearer(owner)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].dayOfWeek").value("MONDAY"));
+                .andExpect(jsonPath("$[0].dayOfWeek").value("MONDAY"))
+                .andExpect(jsonPath("$[0].periods[0].openTime").value("09:00:00"));
+    }
+
+    @Test
+    void getEffectiveScheduleReturnsResolvedDay() throws Exception {
+        User owner = persistUser("effective");
+        Business business = seedBusiness(owner, uniqueSlug("bscc-effective"));
+        LocalDate date = LocalDate.now().plusDays(1);
+        seedSchedule(business, BusinessScheduleDay.DayOfWeek.valueOf(date.getDayOfWeek().name()));
+
+        mockMvc.perform(get("/api/businesses/" + business.getId() + "/schedules/effective")
+                        .param("date", date.toString())
+                        .header("Authorization", bearer(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.isClosed").value(false))
+                .andExpect(jsonPath("$.periods[0].openTime").value("09:00:00"));
     }
 
     @Test
     void updateScheduleReplacesWeeklySchedule() throws Exception {
         User owner = persistUser("update");
         Business business = seedBusiness(owner, uniqueSlug("bscc-update"));
-        seedSchedule(business, BusinessSchedule.DayOfWeek.MONDAY);
+        seedSchedule(business, BusinessScheduleDay.DayOfWeek.MONDAY);
 
         String body = "["
-                + "{\"dayOfWeek\":\"MONDAY\",\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\",\"isClosed\":false},"
-                + "{\"dayOfWeek\":\"TUESDAY\",\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\",\"isClosed\":false}"
+                + "{\"dayOfWeek\":\"MONDAY\",\"isClosed\":false,\"periods\":[{\"openTime\":\"08:00:00\",\"closeTime\":\"12:00:00\"},{\"openTime\":\"13:00:00\",\"closeTime\":\"17:00:00\"}]},"
+                + "{\"dayOfWeek\":\"TUESDAY\",\"isClosed\":false,\"periods\":[{\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\"}]}"
                 + "]";
 
         mockMvc.perform(put("/api/businesses/" + business.getId() + "/schedules")
@@ -104,7 +126,8 @@ class BusinessScheduleControllerTest extends IntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2));
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].periods.length()").value(2));
     }
 
     @Test
@@ -112,7 +135,7 @@ class BusinessScheduleControllerTest extends IntegrationTest {
         User owner = persistUser("bad-day");
         Business business = seedBusiness(owner, uniqueSlug("bscc-bad-day"));
 
-        String body = "[{\"dayOfWeek\":\"FUNDAY\",\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\",\"isClosed\":false}]";
+        String body = "[{\"dayOfWeek\":\"FUNDAY\",\"isClosed\":false,\"periods\":[{\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\"}]}]";
 
         mockMvc.perform(put("/api/businesses/" + business.getId() + "/schedules")
                         .header("Authorization", bearer(owner))
@@ -122,7 +145,7 @@ class BusinessScheduleControllerTest extends IntegrationTest {
     }
 
     @Test
-    void updateScheduleWithMissingRequiredFieldReturns400() throws Exception {
+    void updateScheduleWithOpenDayWithoutPeriodsReturns400() throws Exception {
         User owner = persistUser("bad-field");
         Business business = seedBusiness(owner, uniqueSlug("bscc-bad-field"));
 
@@ -141,7 +164,7 @@ class BusinessScheduleControllerTest extends IntegrationTest {
         User intruder = persistUser("perm-intruder");
         Business business = seedBusiness(owner, uniqueSlug("bscc-perm"));
 
-        String body = "[{\"dayOfWeek\":\"MONDAY\",\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\",\"isClosed\":false}]";
+        String body = "[{\"dayOfWeek\":\"MONDAY\",\"isClosed\":false,\"periods\":[{\"openTime\":\"08:00:00\",\"closeTime\":\"17:00:00\"}]}]";
 
         mockMvc.perform(put("/api/businesses/" + business.getId() + "/schedules")
                         .header("Authorization", bearer(intruder))

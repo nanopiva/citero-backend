@@ -7,6 +7,7 @@ import org.springframework.http.ResponseCookie;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.Locale;
 
 /**
  * Centraliza la creación y el borrado de la cookie del refresh token.
@@ -14,6 +15,10 @@ import java.time.Duration;
  * <p>La cookie es {@code HttpOnly} (no accesible por JS), {@code Secure} en producción
  * y con {@code SameSite} configurable. Está acotada al path de los endpoints de auth
  * para que no viaje en cada request a la API.</p>
+ *
+ * <p>Si se configura {@code SameSite=None} (necesario para dominios cruzados) se exige
+ * {@code Secure=true}, tal como requieren los navegadores. La defensa CSRF asociada la
+ * aporta {@code OriginValidationFilter}.</p>
  */
 @Service
 public class AuthCookieService {
@@ -34,10 +39,30 @@ public class AuthCookieService {
             @Value("${citero.auth.refresh-token-ttl-ms}") long refreshTokenTtlMs) {
         this.cookieName = cookieName;
         this.secure = secure;
-        this.sameSite = sameSite;
+        this.sameSite = normalizeSameSite(sameSite);
         this.domain = domain;
         this.path = path;
         this.refreshTokenTtlMs = refreshTokenTtlMs;
+
+        if ("None".equalsIgnoreCase(this.sameSite) && !secure) {
+            throw new IllegalStateException(
+                    "citero.auth.cookie.same-site=None requiere citero.auth.cookie.secure=true: "
+                            + "los navegadores descartan una cookie SameSite=None sin Secure.");
+        }
+    }
+
+    private static String normalizeSameSite(String value) {
+        if (value == null || value.isBlank()) {
+            return "Lax";
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "lax" -> "Lax";
+            case "strict" -> "Strict";
+            case "none" -> "None";
+            default -> throw new IllegalStateException(
+                    "Valor inválido para citero.auth.cookie.same-site: '" + value
+                            + "'. Usá Lax, Strict o None.");
+        };
     }
 
     public String getCookieName() {

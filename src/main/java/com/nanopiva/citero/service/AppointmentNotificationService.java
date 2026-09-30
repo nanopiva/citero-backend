@@ -5,6 +5,8 @@ import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.Service;
 import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
+import com.nanopiva.citero.security.jwt.PublicLinkTokenService;
+import com.nanopiva.citero.util.EmailText;
 import com.nanopiva.citero.util.StaffUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,9 +21,20 @@ public class AppointmentNotificationService {
     private static final Logger log = LoggerFactory.getLogger(AppointmentNotificationService.class);
 
     private final EmailService emailService;
+    private final PublicLinkTokenService publicLinkTokenService;
 
-    public AppointmentNotificationService(EmailService emailService) {
+    public AppointmentNotificationService(EmailService emailService,
+                                          PublicLinkTokenService publicLinkTokenService) {
         this.emailService = emailService;
+        this.publicLinkTokenService = publicLinkTokenService;
+    }
+
+    /** Link de gestión del turno con token firmado (reemplaza al ID adivinable). */
+    private String buildManageUrl(Appointment appointment, String frontendUrl) {
+        Business business = appointment.getStaff().getBusiness();
+        String token = publicLinkTokenService.generate(
+                appointment.getId(), appointment.getStartTime(), business.getTimezone());
+        return frontendUrl + "/turnos/gestionar?id=" + appointment.getId() + "&token=" + token;
     }
 
     /**
@@ -55,11 +68,11 @@ public class AppointmentNotificationService {
             clientVars.put("date", formattedDate);
             clientVars.put("time", formattedTime);
             clientVars.put("address", business.getAddress() != null ? business.getAddress() : "Dirección no disponible");
-            clientVars.put("manageUrl", frontendUrl + "/turnos/gestionar?id=" + appointment.getId());
+            clientVars.put("manageUrl", buildManageUrl(appointment, frontendUrl));
 
             emailService.sendEmail(
                     client.getEmail(),
-                    "Confirmación de tu turno en " + business.getName(),
+                    "Confirmación de tu turno en " + EmailText.sanitizeHeader(business.getName()),
                     "emails/appointment-confirmation-client",
                     clientVars
             );
@@ -76,7 +89,7 @@ public class AppointmentNotificationService {
 
             emailService.sendEmail(
                     owner.getEmail(),
-                    "Nueva reserva en " + business.getName(),
+                    "Nueva reserva en " + EmailText.sanitizeHeader(business.getName()),
                     "emails/appointment-confirmation-owner",
                     ownerVars
             );
@@ -96,7 +109,7 @@ public class AppointmentNotificationService {
 
                 emailService.sendEmail(
                         staffEmail,
-                        "Nuevo turno asignado en " + business.getName(),
+                        "Nuevo turno asignado en " + EmailText.sanitizeHeader(business.getName()),
                         "emails/appointment-confirmation-staff",
                         staffVars
                 );
@@ -142,7 +155,7 @@ public class AppointmentNotificationService {
 
             emailService.sendEmail(
                     owner.getEmail(),
-                    "Turno cancelado en " + business.getName(),
+                    "Turno cancelado en " + EmailText.sanitizeHeader(business.getName()),
                     "emails/appointment-cancellation-owner",
                     ownerVars
             );
@@ -196,7 +209,7 @@ public class AppointmentNotificationService {
 
         emailService.sendEmail(
                 client.getEmail(),
-                "Confirmación de cancelación - " + business.getName(),
+                "Confirmación de cancelación - " + EmailText.sanitizeHeader(business.getName()),
                 "emails/appointment-cancellation-client",
                 clientVars
         );
@@ -234,13 +247,13 @@ public class AppointmentNotificationService {
             clientVars.put("date", formattedDate);
             clientVars.put("time", formattedTime);
             clientVars.put("address", business.getAddress() != null ? business.getAddress() : "Dirección no disponible");
-            clientVars.put("manageUrl", frontendUrl + "/turnos/gestionar?id=" + appointment.getId());
+            clientVars.put("manageUrl", buildManageUrl(appointment, frontendUrl));
             clientVars.put("reminderType", reminderType);
 
             // Asunto dinámico según el tipo de recordatorio
             String subject = reminderType.equals("24h")
-                    ? "Recordatorio: Tu turno es mañana en " + business.getName()
-                    : "Recordatorio: Tu turno es en 2 horas en " + business.getName();
+                    ? "Recordatorio: Tu turno es mañana en " + EmailText.sanitizeHeader(business.getName())
+                    : "Recordatorio: Tu turno es en 2 horas en " + EmailText.sanitizeHeader(business.getName());
 
             Boolean sent = emailService.sendEmail(
                     client.getEmail(),

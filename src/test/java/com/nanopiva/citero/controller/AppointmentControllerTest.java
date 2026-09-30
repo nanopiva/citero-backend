@@ -11,6 +11,7 @@ import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.security.UserDetailsImpl;
+import com.nanopiva.citero.security.jwt.PublicLinkTokenService;
 import com.nanopiva.citero.service.EmailService;
 import com.nanopiva.citero.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
@@ -46,6 +47,7 @@ class AppointmentControllerTest extends IntegrationTest {
     @Autowired private StaffRepository staffRepository;
     @Autowired private ServiceRepository serviceRepository;
     @Autowired private AppointmentRepository appointmentRepository;
+    @Autowired private PublicLinkTokenService publicLinkTokenService;
 
     @MockitoBean private EmailService emailService;
 
@@ -170,14 +172,46 @@ class AppointmentControllerTest extends IntegrationTest {
         User client = newUser("client-ctrl-public");
         Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
                 Appointment.AppointmentStatus.CONFIRMED);
+        String token = publicLinkTokenService.generate(
+                appointment.getId(), appointment.getStartTime(), business.getTimezone());
 
-        mockMvc.perform(get("/api/appointments/public/" + appointment.getId()))
+        mockMvc.perform(get("/api/appointments/public/" + appointment.getId()).param("token", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.businessName").value(business.getName()))
                 .andExpect(jsonPath("$.serviceName").value(service.getName()))
                 .andExpect(jsonPath("$.clientEmail").doesNotExist())
                 .andExpect(jsonPath("$.ownedByViewer").value(false))
                 .andExpect(jsonPath("$.status").value("CONFIRMED"));
+    }
+
+    @Test
+    void endpointPublicoSinTokenDevuelveNotFound() throws Exception {
+        Business business = newBusiness("ctrl-public-no-token");
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-ctrl-public-no-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        mockMvc.perform(get("/api/appointments/public/" + appointment.getId()))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void endpointPublicoConTokenDeOtroTurnoDevuelveNotFound() throws Exception {
+        Business business = newBusiness("ctrl-public-other-token");
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-ctrl-public-other-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+        Appointment other = newAppointment(client, staff, service, futureSlot(1, 11),
+                Appointment.AppointmentStatus.CONFIRMED);
+        String otherToken = publicLinkTokenService.generate(
+                other.getId(), other.getStartTime(), business.getTimezone());
+
+        mockMvc.perform(get("/api/appointments/public/" + appointment.getId()).param("token", otherToken))
+                .andExpect(status().isNotFound());
     }
 
     @Test

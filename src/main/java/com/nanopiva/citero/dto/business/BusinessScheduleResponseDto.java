@@ -5,7 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalTime;
+import java.util.List;
 
 @Data
 @Builder
@@ -15,7 +15,6 @@ public class BusinessScheduleResponseDto {
 
     private Long id;
     private String dayOfWeek;
-    private LocalTime openTime;
-    private LocalTime closeTime;
     private Boolean isClosed;
+    private List<SchedulePeriodDto> periods;
 }

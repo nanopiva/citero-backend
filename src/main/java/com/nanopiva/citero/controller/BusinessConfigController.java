@@ -18,8 +18,11 @@ public class BusinessConfigController {
     private final BusinessConfigService businessConfigService;
 
     @GetMapping
-    public ResponseEntity<BusinessConfigResponseDto> getConfig(@PathVariable Long businessId) {
-        return ResponseEntity.ok(businessConfigService.getConfigByBusinessId(businessId));
+    public ResponseEntity<BusinessConfigResponseDto> getConfig(
+            @PathVariable Long businessId,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        Long viewerId = userDetails != null ? userDetails.getId() : null;
+        return ResponseEntity.ok(businessConfigService.getConfigByBusinessId(businessId, viewerId));
     }
 
     @PutMapping

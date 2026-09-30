@@ -118,7 +118,7 @@ class GlobalExceptionHandlerTest extends IntegrationTest {
 
     @Test
     void validationErrorOnRegisterReturns400WithFieldMessages() throws Exception {
-        String body = "{\"email\":\"no-es-email\",\"password\":\"123\"}";
+        String body = "{\"email\":\"no-es-email\",\"password\":\"123\",\"otpCode\":\"123456\"}";
 
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)

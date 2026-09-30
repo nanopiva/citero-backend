@@ -80,12 +80,12 @@ public class Business {
     @EqualsAndHashCode.Exclude
     private BusinessConfig config;
 
-    // Relación 1:N con BusinessSchedule
+    // Relación 1:N con BusinessScheduleDay (reglas semanales y excepciones)
     @OneToMany(mappedBy = "business", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     @ToString.Exclude
     @EqualsAndHashCode.Exclude
-    private Set<BusinessSchedule> schedules = new HashSet<>();
+    private Set<BusinessScheduleDay> scheduleDays = new HashSet<>();
 
     // Relación 1:N con Service
     @OneToMany(mappedBy = "business", cascade = CascadeType.ALL, orphanRemoval = true)

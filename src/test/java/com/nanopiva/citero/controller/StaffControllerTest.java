@@ -103,7 +103,7 @@ class StaffControllerTest extends IntegrationTest {
     }
 
     @Test
-    void getStaffIsPublicAndListsTeam() throws Exception {
+    void getStaffIsPublicAndListsTeamWithoutEmails() throws Exception {
         User owner = persistUser("list");
         Business business = seedBusiness(owner, uniqueSlug("sc-list"));
         staffRepository.save(Staff.builder().business(business).customName("Ana").build());
@@ -111,7 +111,22 @@ class StaffControllerTest extends IntegrationTest {
         mockMvc.perform(get("/api/businesses/" + business.getId() + "/staff"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].customName").value("Ana"));
+                .andExpect(jsonPath("$[0].customName").value("Ana"))
+                .andExpect(jsonPath("$[0].userEmail").doesNotExist());
+    }
+
+    @Test
+    void getStaffAsOwnerIncludesEmails() throws Exception {
+        User owner = persistUser("list-owner");
+        Business business = seedBusiness(owner, uniqueSlug("sc-list-owner"));
+        String email = "sc-member-" + System.nanoTime() + "@test.com";
+        staffRepository.save(Staff.builder().business(business).customName("Ana").contactEmail(email).build());
+
+        mockMvc.perform(get("/api/businesses/" + business.getId() + "/staff")
+                        .header("Authorization", bearer(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].customName").value("Ana"))
+                .andExpect(jsonPath("$[0].userEmail").value(email));
     }
 
     @Test

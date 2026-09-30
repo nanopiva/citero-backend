@@ -8,6 +8,8 @@ import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.ForbiddenException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
 import com.nanopiva.citero.repository.BusinessRepository;
+import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,20 +17,40 @@ import org.springframework.transaction.annotation.Transactional;
 public class BusinessConfigService {
 
     private final BusinessRepository businessRepository;
+    private final UserRepository userRepository;
+    private final StaffRepository staffRepository;
 
-    public BusinessConfigService(BusinessRepository businessRepository) {
+    public BusinessConfigService(BusinessRepository businessRepository,
+                                 UserRepository userRepository,
+                                 StaffRepository staffRepository) {
         this.businessRepository = businessRepository;
+        this.userRepository = userRepository;
+        this.staffRepository = staffRepository;
     }
 
+    /** Config del negocio: completa para dueño/staff; para el resto sólo el modo de reserva. */
     @Transactional(readOnly = true)
-    public BusinessConfigResponseDto getConfigByBusinessId(Long businessId) {
+    public BusinessConfigResponseDto getConfigByBusinessId(Long businessId, Long viewerId) {
         Business business = businessRepository.findById(businessId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
         BusinessConfig config = business.getConfig();
         if (config == null) {
             throw new ResourceNotFoundException("Configuración no encontrada para el negocio con ID: " + businessId);
         }
-        return mapToResponseDto(config);
+        return mapToResponseDto(config, hasManagementAccess(business, viewerId));
+    }
+
+    /** Acceso completo a la config: dueño o miembro del staff. */
+    private boolean hasManagementAccess(Business business, Long viewerId) {
+        if (viewerId == null) {
+            return false;
+        }
+        if (business.getOwner().getId().equals(viewerId)) {
+            return true;
+        }
+        return userRepository.findById(viewerId)
+                .flatMap(user -> staffRepository.findByUserAndBusiness(user, business))
+                .isPresent();
     }
 
     @Transactional
@@ -62,7 +84,7 @@ public class BusinessConfigService {
 
         // El cascade persiste los cambios en la configuración al guardar el negocio.
         businessRepository.save(business);
-        return mapToResponseDto(config);
+        return mapToResponseDto(config, true);
     }
 
     @Transactional(readOnly = true)
@@ -76,17 +98,20 @@ public class BusinessConfigService {
         return config;
     }
 
-    private BusinessConfigResponseDto mapToResponseDto(BusinessConfig config) {
-        return BusinessConfigResponseDto.builder()
-                .reservationMode(config.getReservationMode().name())
-                .cancellationToleranceHours(config.getCancellationToleranceHours())
-                .enablePenalties(config.getEnablePenalties())
-                .maxStrikes(config.getMaxStrikes())
-                .defaultOpeningTime(config.getDefaultOpeningTime())
-                .defaultClosingTime(config.getDefaultClosingTime())
-                .enableReminders(config.getEnableReminders())
-                .reminder24hEnabled(config.getReminder24hEnabled())
-                .reminder2hEnabled(config.getReminder2hEnabled())
-                .build();
+    private BusinessConfigResponseDto mapToResponseDto(BusinessConfig config, boolean full) {
+        BusinessConfigResponseDto.BusinessConfigResponseDtoBuilder builder = BusinessConfigResponseDto.builder()
+                .reservationMode(config.getReservationMode().name());
+
+        if (full) {
+            builder.cancellationToleranceHours(config.getCancellationToleranceHours())
+                    .enablePenalties(config.getEnablePenalties())
+                    .maxStrikes(config.getMaxStrikes())
+                    .defaultOpeningTime(config.getDefaultOpeningTime())
+                    .defaultClosingTime(config.getDefaultClosingTime())
+                    .enableReminders(config.getEnableReminders())
+                    .reminder24hEnabled(config.getReminder24hEnabled())
+                    .reminder2hEnabled(config.getReminder2hEnabled());
+        }
+        return builder.build();
     }
 }

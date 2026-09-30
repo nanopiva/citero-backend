@@ -15,11 +15,11 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -29,9 +29,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
-
-    @Value("${citero.cors.allowed-origins}")
-    private String allowedOriginsRaw;
+    private final CorsOrigins corsOrigins;
 
     // La consola H2 solo se habilita en el perfil dev; si está apagada, ni se permite en
     // seguridad ni se relaja frame-options.
@@ -68,13 +66,18 @@ public class SecurityConfig {
 
                     auth.anyRequest().authenticated();
                 })
-                .headers(headers -> headers.frameOptions(frameOptions -> {
-                    if (h2ConsoleEnabled) {
-                        frameOptions.sameOrigin();
-                    } else {
-                        frameOptions.deny();
-                    }
-                }));
+                .headers(headers -> {
+                    headers.frameOptions(frameOptions -> {
+                        if (h2ConsoleEnabled) {
+                            frameOptions.sameOrigin();
+                        } else {
+                            frameOptions.deny();
+                        }
+                    });
+                    headers.referrerPolicy(referrer -> referrer.policy(ReferrerPolicy.NO_REFERRER));
+                    headers.permissionsPolicy(permissions -> permissions.policy(
+                            "camera=(), microphone=(), geolocation=(), payment=(), usb=()"));
+                });
         return http.build();
     }
 
@@ -90,10 +93,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.stream(allowedOriginsRaw.split(","))
-                .map(String::trim)
-                .filter(origin -> !origin.isEmpty())
-                .toList());
+        configuration.setAllowedOrigins(corsOrigins.list());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With", "X-Business-ID"));
         configuration.setExposedHeaders(List.of("Authorization"));

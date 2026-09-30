@@ -1,5 +1,6 @@
 package com.nanopiva.citero.dto.user;
 
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -12,6 +13,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class OtpRequestDto {
 
-    @NotBlank(message = "El target (email o teléfono) es obligatorio")
+    @NotBlank(message = "El email es obligatorio")
+    @Email(message = "El formato del email no es válido")
     private String target;
 }

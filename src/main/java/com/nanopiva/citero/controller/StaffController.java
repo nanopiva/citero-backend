@@ -38,8 +38,11 @@ public class StaffController {
     }
 
     @GetMapping
-    public ResponseEntity<List<StaffResponseDto>> getStaff(@PathVariable Long businessId) {
-        return ResponseEntity.ok(staffService.getStaffByBusinessId(businessId));
+    public ResponseEntity<List<StaffResponseDto>> getStaff(
+            @PathVariable Long businessId,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        Long viewerId = userDetails != null ? userDetails.getId() : null;
+        return ResponseEntity.ok(staffService.getStaffByBusinessId(businessId, viewerId));
     }
 
     @PutMapping("/{staffId}")

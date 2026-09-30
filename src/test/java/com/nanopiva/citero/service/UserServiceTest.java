@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,6 +35,7 @@ class UserServiceTest extends IntegrationTest {
     @Autowired private BusinessRepository businessRepository;
     @Autowired private StaffRepository staffRepository;
     @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private RefreshTokenService refreshTokenService;
 
     // Evita llamadas reales a Resend al registrar (el registro dispara un OTP de verificación).
     @MockitoBean private EmailService emailService;
@@ -50,6 +52,7 @@ class UserServiceTest extends IntegrationTest {
         return userRepository.save(User.builder()
                 .email(email)
                 .password(passwordEncoder.encode(rawPassword))
+                .emailVerified(true)
                 .build());
     }
 
@@ -65,6 +68,30 @@ class UserServiceTest extends IntegrationTest {
 
         assertThrows(DuplicateResourceException.class, () -> userService.register(dto),
                 "No debe permitirse registrar un email ya existente");
+    }
+
+    @Test
+    void registerConPasswordComunLanzaBadRequest() {
+        RegisterRequestDto dto = RegisterRequestDto.builder()
+                .email(uniqueEmail("common"))
+                .password("password123")
+                .build();
+
+        assertThrows(BadRequestException.class, () -> userService.register(dto),
+                "No debe permitirse una contraseña de la blocklist de comunes");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void updatePasswordRevocaLasSesionesActivas() {
+        String email = uniqueEmail("update-revoke");
+        User user = persistUser(email, "secret123");
+        RefreshTokenService.RefreshTokenPair pair = refreshTokenService.issue(user, "JUnit", "127.0.0.1");
+
+        userService.updateUser(user.getId(), UserUpdateDto.builder().password("nuevaClave123").build());
+
+        assertTrue(refreshTokenService.rotate(pair.rawToken(), "JUnit", "127.0.0.1").isEmpty(),
+                "Cambiar la contraseña debe invalidar las sesiones previas");
     }
 
     @Test
@@ -176,6 +203,22 @@ class UserServiceTest extends IntegrationTest {
         assertEquals(user.getId(), linked.getUser().getId(),
                 "Una cuenta ya registrada debe vincularse al reconciliar la invitación");
         assertTrue(user.getEmailVerified(), "La invitación verifica el email");
+    }
+
+    @Test
+    void linkPendingStaffNoVinculaUsuarioSinVerificar() {
+        String email = uniqueEmail("invite-unverified");
+        Staff orphan = orphanStaff(email);
+        User user = userRepository.save(User.builder()
+                .email(email)
+                .password("x")
+                .emailVerified(false)
+                .build());
+
+        userService.linkPendingStaff(user);
+
+        assertNull(staffRepository.findById(orphan.getId()).orElseThrow().getUser(),
+                "Un usuario sin verificar no debe reclamar un perfil de staff");
     }
 
     private Staff orphanStaff(String email) {

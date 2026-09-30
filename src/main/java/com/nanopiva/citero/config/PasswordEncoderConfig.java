@@ -10,6 +10,7 @@ public class PasswordEncoderConfig {
 
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        // Fuerza 12; no afecta hashes previos (el costo va dentro del propio hash).
+        return new BCryptPasswordEncoder(12);
     }
 }

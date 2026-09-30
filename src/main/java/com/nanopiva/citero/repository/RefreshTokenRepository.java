@@ -30,6 +30,14 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     int revokeBySessionId(@Param("sessionId") String sessionId);
 
     /**
+     * Revoca todos los refresh tokens activos de un usuario. Se usa al cambiar o resetear
+     * la contraseña: invalida las sesiones emitidas antes del cambio (p. ej. un token robado).
+     */
+    @Modifying
+    @Query("update RefreshToken r set r.revoked = true where r.user = :user and r.revoked = false")
+    int revokeByUser(@Param("user") User user);
+
+    /**
      * Elimina los tokens ya expirados (housekeeping).
      */
     @Modifying

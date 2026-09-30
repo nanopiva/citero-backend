@@ -1,6 +1,9 @@
 package com.nanopiva.citero.controller;
 
+import com.nanopiva.citero.entity.OtpToken;
+import com.nanopiva.citero.repository.OtpTokenRepository;
 import com.nanopiva.citero.service.EmailService;
+import com.nanopiva.citero.service.OtpService;
 import com.nanopiva.citero.support.IntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
@@ -21,6 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AuthControllerTest extends IntegrationTest {
 
     @Autowired private MockMvc mockMvc;
+    @Autowired private OtpTokenRepository otpTokenRepository;
 
     // Evita llamadas reales a Resend al registrar (dispara un OTP de verificación).
     @MockitoBean private EmailService emailService;
@@ -30,9 +34,20 @@ class AuthControllerTest extends IntegrationTest {
     }
 
     private MvcResult register(String email) throws Exception {
+        mockMvc.perform(post("/api/auth/register/request-otp")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\"}"))
+                .andExpect(status().isNoContent());
+
+        String code = otpTokenRepository
+                .findFirstByTargetAndPurposeAndIsUsedFalseOrderByCreatedAtDesc(
+                        email, OtpService.PURPOSE_EMAIL_VERIFICATION)
+                .map(OtpToken::getCode)
+                .orElseThrow(() -> new AssertionError("No hay OTP de registro para " + email));
+
         return mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"" + email + "\",\"password\":\"secret123\"}"))
+                        .content("{\"email\":\"" + email + "\",\"password\":\"secret123\",\"otpCode\":\"" + code + "\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
     }

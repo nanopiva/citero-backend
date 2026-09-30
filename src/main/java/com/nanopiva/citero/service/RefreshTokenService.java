@@ -93,6 +93,12 @@ public class RefreshTokenService {
         return Optional.of(pair);
     }
 
+    /** Revoca todas las sesiones del usuario (al cambiar/resetear contraseña). */
+    @Transactional
+    public void revokeAllForUser(User user) {
+        refreshTokenRepository.revokeByUser(user);
+    }
+
     /**
      * Revoca la familia de sesión a la que pertenece el token (logout).
      */

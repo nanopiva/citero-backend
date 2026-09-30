@@ -27,6 +27,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -142,15 +143,30 @@ class StaffServiceTest extends IntegrationTest {
     }
 
     @Test
-    void getStaffByBusinessIdListsTeam() {
+    void getStaffByBusinessIdListsTeamForOwnerWithEmail() {
         User owner = persistUser("list-owner");
         Business business = seedBusiness(owner, uniqueSlug("list"));
+        String email = "list-" + System.nanoTime() + "@test.com";
         staffService.createStaff(business.getId(), owner.getId(),
-                StaffCreateRequestDto.builder().email("list-" + System.nanoTime() + "@test.com").build());
+                StaffCreateRequestDto.builder().email(email).build());
 
-        List<StaffResponseDto> staff = staffService.getStaffByBusinessId(business.getId());
+        List<StaffResponseDto> staff = staffService.getStaffByBusinessId(business.getId(), owner.getId());
 
         assertEquals(1, staff.size(), "Debe listarse el empleado creado");
+        assertEquals(email, staff.get(0).getUserEmail(), "El dueño debe ver el email del equipo");
+    }
+
+    @Test
+    void getStaffByBusinessIdHidesEmailForAnonymous() {
+        User owner = persistUser("anon-owner");
+        Business business = seedBusiness(owner, uniqueSlug("anon"));
+        staffService.createStaff(business.getId(), owner.getId(),
+                StaffCreateRequestDto.builder().email("anon-" + System.nanoTime() + "@test.com").build());
+
+        List<StaffResponseDto> staff = staffService.getStaffByBusinessId(business.getId(), null);
+
+        assertEquals(1, staff.size());
+        assertNull(staff.get(0).getUserEmail(), "El catálogo público no debe exponer emails del staff");
     }
 
     @Test

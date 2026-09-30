@@ -4,6 +4,7 @@ import com.nanopiva.citero.security.UserDetailsImpl;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
@@ -23,11 +24,39 @@ import java.util.UUID;
 @Service
 public class JwtService {
 
+    private static final String ACCESS_PURPOSE = "access";
+    private static final int MIN_SECRET_BYTES = 64; // HS512 exige >= 512 bits
+
     @Value("${citero.jwt.secret}")
     private String jwtSecret;
 
+    @Value("${citero.jwt.issuer:citero}")
+    private String issuer;
+
+    @Value("${citero.jwt.audience:citero-app}")
+    private String audience;
+
     @Value("${citero.auth.access-token-ttl-ms}")
     private long jwtExpirationMs;
+
+    /** Falla al arrancar (no en el primer login) si el secreto falta o es corto para HS512. */
+    @PostConstruct
+    void validateSecret() {
+        if (jwtSecret == null || jwtSecret.isBlank()) {
+            throw new IllegalStateException(
+                    "citero.jwt.secret no está configurado. Definí CITERO_JWT_SECRET (Base64, >= 64 bytes).");
+        }
+        byte[] keyBytes;
+        try {
+            keyBytes = Decoders.BASE64.decode(jwtSecret);
+        } catch (Exception ex) {
+            throw new IllegalStateException("citero.jwt.secret debe estar codificado en Base64.", ex);
+        }
+        if (keyBytes.length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException("citero.jwt.secret debe decodificar a al menos "
+                    + MIN_SECRET_BYTES + " bytes para HS512; actual: " + keyBytes.length + " bytes.");
+        }
+    }
 
     /**
      * Genera un token JWT a partir de la autenticación actual.
@@ -53,7 +82,10 @@ public class JwtService {
         return Jwts.builder()
                 .id(UUID.randomUUID().toString())
                 .subject(userDetails.getId().toString())
+                .issuer(issuer)
+                .setAudience(audience)
                 .claim("email", userDetails.getEmail())
+                .claim("purpose", ACCESS_PURPOSE)
                 .issuedAt(now)
                 .expiration(expiryDate)
                 .signWith(getSigningKey(), Jwts.SIG.HS512)
@@ -90,10 +122,7 @@ public class JwtService {
      */
     public boolean validateToken(String authToken) {
         try {
-            Jwts.parser()
-                    .verifyWith(getSigningKey())
-                    .build()
-                    .parseSignedClaims(authToken);
+            parseClaims(authToken);
             return true;
         } catch (JwtException | IllegalArgumentException ex) {
             log.warn("Token JWT inválido: {}", ex.getMessage());
@@ -118,11 +147,19 @@ public class JwtService {
      * @return los claims contenidos en el token
      */
     private Claims parseClaims(String token) {
-        return Jwts.parser()
+        Claims claims = Jwts.parser()
                 .verifyWith(getSigningKey())
+                .requireIssuer(issuer)
+                .requireAudience(audience)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+
+        // Distingue el access token de otros JWT firmados con el mismo secreto (p. ej. el link público).
+        if (!ACCESS_PURPOSE.equals(claims.get("purpose", String.class))) {
+            throw new JwtException("El token no es un access token válido.");
+        }
+        return claims;
     }
 
     /**

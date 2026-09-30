@@ -7,8 +7,10 @@ import com.nanopiva.citero.dto.user.WorkspaceResponseDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
+import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.DuplicateResourceException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.security.CommonPasswordCheck;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ClientReputationRepository;
@@ -35,13 +37,15 @@ public class UserService {
     private final ClientReputationRepository clientReputationRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final OtpTokenRepository otpTokenRepository;
+    private final RefreshTokenService refreshTokenService;
 
     public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder,
                        BusinessRepository businessRepository, StaffRepository staffRepository,
                        AppointmentRepository appointmentRepository,
                        ClientReputationRepository clientReputationRepository,
                        RefreshTokenRepository refreshTokenRepository,
-                       OtpTokenRepository otpTokenRepository) {
+                       OtpTokenRepository otpTokenRepository,
+                       RefreshTokenService refreshTokenService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.businessRepository = businessRepository;
@@ -50,6 +54,7 @@ public class UserService {
         this.clientReputationRepository = clientReputationRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.otpTokenRepository = otpTokenRepository;
+        this.refreshTokenService = refreshTokenService;
     }
 
     @Transactional
@@ -59,7 +64,9 @@ public class UserService {
         User user;
         if (existing.isPresent()) {
             if (!Boolean.TRUE.equals(existing.get().getIsGuest())) {
-                throw new DuplicateResourceException("El email " + requestDto.getEmail() + " ya está registrado.");
+                // Mensaje genérico para no confirmar si el email ya está registrado.
+                throw new DuplicateResourceException(
+                        "No se pudo completar el registro. Si ya tenés cuenta, iniciá sesión o recuperá tu contraseña.");
             }
             // Cuenta creada al reservar como invitado: la reclama quien se registra con ese
             // email, conservando sus reservas previas.
@@ -70,8 +77,14 @@ public class UserService {
             user.setEmail(requestDto.getEmail());
         }
 
+        if (CommonPasswordCheck.isCommon(requestDto.getPassword())) {
+            throw new BadRequestException("Esa contraseña es demasiado común. Elegí otra.");
+        }
+
         user.setPassword(passwordEncoder.encode(requestDto.getPassword()));
         user.setPhone(requestDto.getPhone());
+        // La cuenta sólo llega acá tras verificar el OTP de email (ver AuthService.register).
+        user.setEmailVerified(true);
         User savedUser = userRepository.save(user);
 
         linkPendingStaff(savedUser);
@@ -88,6 +101,10 @@ public class UserService {
      */
     @Transactional
     public void linkPendingStaff(User user) {
+        // Sólo vincula si el email está verificado (evita reclamar un perfil de staff ajeno).
+        if (!Boolean.TRUE.equals(user.getEmailVerified())) {
+            return;
+        }
         List<Staff> pending = staffRepository.findByContactEmailIgnoreCase(user.getEmail());
         for (Staff staff : pending) {
             if (staff.getUser() != null) {
@@ -123,7 +140,11 @@ public class UserService {
 
         // El email no se puede modificar: es el identificador de la cuenta y del login.
 
-        if (updateDto.getPassword() != null && !updateDto.getPassword().isBlank()) {
+        boolean passwordChanged = updateDto.getPassword() != null && !updateDto.getPassword().isBlank();
+        if (passwordChanged) {
+            if (CommonPasswordCheck.isCommon(updateDto.getPassword())) {
+                throw new BadRequestException("Esa contraseña es demasiado común. Elegí otra.");
+            }
             user.setPassword(passwordEncoder.encode(updateDto.getPassword()));
         }
 
@@ -132,6 +153,12 @@ public class UserService {
         }
 
         User updatedUser = userRepository.save(user);
+
+        if (passwordChanged) {
+            // Cierra las sesiones existentes tras un cambio de contraseña.
+            refreshTokenService.revokeAllForUser(updatedUser);
+        }
+
         return mapToResponseDto(updatedUser);
     }
 

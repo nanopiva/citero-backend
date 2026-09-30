@@ -18,7 +18,6 @@ public class BusinessResponseDto {
     private String slug;
     private String description;
     private LocalDateTime createdAt;
-    private BusinessConfigResponseDto config;
     private String logoUrl;
 
     // Campos de contacto y ubicación

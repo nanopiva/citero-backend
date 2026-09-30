@@ -51,4 +51,18 @@ class RefreshTokenFlowTest extends IntegrationTest {
     void unknownTokenIsRejected() {
         assertTrue(refreshTokenService.rotate("token-inexistente", "UA", "127.0.0.1").isEmpty());
     }
+
+    @Test
+    void revokeAllForUserInvalidatesEverySession() {
+        User user = newUser("revoke-all");
+        var first = refreshTokenService.issue(user, "UA", "127.0.0.1");
+        var second = refreshTokenService.issue(user, "UA", "127.0.0.1");
+
+        refreshTokenService.revokeAllForUser(user);
+
+        assertTrue(refreshTokenService.rotate(first.rawToken(), "UA", "127.0.0.1").isEmpty(),
+                "La primera sesión debe quedar invalidada");
+        assertTrue(refreshTokenService.rotate(second.rawToken(), "UA", "127.0.0.1").isEmpty(),
+                "La segunda sesión debe quedar invalidada");
+    }
 }

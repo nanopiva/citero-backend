@@ -133,12 +133,20 @@ public class StaffService {
         return mapToResponseDto(staffRepository.save(staff));
     }
 
+    /**
+     * Lista el equipo de un negocio. El email de cada profesional solo se incluye si
+     * el solicitante autenticado es el dueño (evita exponer PII en el catálogo público).
+     *
+     * @param businessId id del negocio
+     * @param viewerId   id del usuario autenticado, o {@code null} si es anónimo
+     */
     @Transactional(readOnly = true)
-    public List<StaffResponseDto> getStaffByBusinessId(Long businessId) {
+    public List<StaffResponseDto> getStaffByBusinessId(Long businessId, Long viewerId) {
         Business business = businessRepository.findById(businessId)
                 .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+        boolean includeEmail = viewerId != null && business.getOwner().getId().equals(viewerId);
         return staffRepository.findByBusiness(business).stream()
-                .map(this::mapToResponseDto)
+                .map(staff -> mapToResponseDto(staff, includeEmail))
                 .toList();
     }
 
@@ -249,10 +257,18 @@ public class StaffService {
     }
 
     private StaffResponseDto mapToResponseDto(Staff staff) {
+        return mapToResponseDto(staff, true);
+    }
+
+    /**
+     * @param includeEmail {@code true} solo en contextos owner-only; {@code false} para
+     *                     el catálogo público, donde el email no debe exponerse.
+     */
+    private StaffResponseDto mapToResponseDto(Staff staff, boolean includeEmail) {
         return StaffResponseDto.builder()
                 .id(staff.getId())
                 .customName(staff.getCustomName())
-                .userEmail(StaffUtils.email(staff))
+                .userEmail(includeEmail ? StaffUtils.email(staff) : null)
                 .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
                 .services(mapServicesToDto(staff.getServices()))
                 .build();

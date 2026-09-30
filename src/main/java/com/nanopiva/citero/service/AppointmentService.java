@@ -10,11 +10,14 @@ import com.nanopiva.citero.entity.*;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.ForbiddenException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.exception.TooManyRequestsException;
+import com.nanopiva.citero.security.RateLimitStore;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.security.jwt.PublicLinkTokenService;
 import com.nanopiva.citero.util.BusinessTime;
 import com.nanopiva.citero.util.StaffUtils;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,6 +30,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,17 +47,25 @@ public class AppointmentService {
     private final ReputationService reputationService;
     private final OtpService otpService;
     private final AppointmentNotificationService notificationService;
+    private final PublicLinkTokenService publicLinkTokenService;
+    private final RateLimitStore rateLimitStore;
     private final String frontendUrl;
+
+    @Value("${citero.rate-limit.booking-global-per-minute:500}")
+    private int bookingGlobalPerMinute;
 
     // Rango amplio para cuando no se filtra por fecha (evita parámetros nulos en la query).
     private static final LocalDateTime RANGE_START = LocalDateTime.of(1900, 1, 1, 0, 0);
     private static final LocalDateTime RANGE_END = LocalDateTime.of(2200, 1, 1, 0, 0);
 
-    /**
-     * Transiciones de estado permitidas. Los estados terminales (COMPLETED, NO_SHOW,
-     * CANCELLED) no tienen salida: una vez alcanzados no se puede volver atrás por este
-     * endpoint (la corrección de reputación se hace vía gestión manual, UC-22).
-     */
+    // Caps anti-abuso de la reserva (además del límite por IP).
+    private static final int MAX_BOOKINGS_PER_EMAIL_PER_DAY = 5;
+    private static final Duration BOOKING_EMAIL_WINDOW = Duration.ofDays(1);
+    private static final int MAX_BOOKINGS_PER_BUSINESS_PER_HOUR = 200;
+    private static final Duration BOOKING_BUSINESS_WINDOW = Duration.ofHours(1);
+
+    // Transiciones permitidas. Los estados terminales (COMPLETED, NO_SHOW, CANCELLED) no
+    // tienen salida por este endpoint.
     private static final Map<Appointment.AppointmentStatus, Set<Appointment.AppointmentStatus>> ALLOWED_TRANSITIONS =
             Map.of(
                     Appointment.AppointmentStatus.CONFIRMED, Set.of(
@@ -73,6 +85,8 @@ public class AppointmentService {
                               ReputationService reputationService,
                               OtpService otpService,
                               AppointmentNotificationService notificationService,
+                              PublicLinkTokenService publicLinkTokenService,
+                              RateLimitStore rateLimitStore,
                               @Value("${citero.frontend.url}") String frontendUrl) {
         this.appointmentRepository = appointmentRepository;
         this.userRepository = userRepository;
@@ -84,6 +98,8 @@ public class AppointmentService {
         this.reputationService = reputationService;
         this.otpService = otpService;
         this.notificationService = notificationService;
+        this.publicLinkTokenService = publicLinkTokenService;
+        this.rateLimitStore = rateLimitStore;
         this.frontendUrl = frontendUrl;
     }
 
@@ -120,6 +136,25 @@ public class AppointmentService {
 
         if (reputationService.isClientBlocked(client.getId(), business.getId())) {
             throw new BadRequestException("No puedes reservar en este negocio debido a ausencias o cancelaciones previas.");
+        }
+
+        // Caps anti-abuso: global (system-wide), por negocio y por email.
+        if (!rateLimitStore.tryConsume("booking-global", bookingGlobalPerMinute, Duration.ofMinutes(1))) {
+            throw new TooManyRequestsException(
+                    "El servicio está saturado. Esperá un momento e intentá de nuevo.");
+        }
+        String emailKey = client.getEmail() == null
+                ? "id:" + client.getId()
+                : client.getEmail().toLowerCase(Locale.ROOT);
+        if (!rateLimitStore.tryConsume("booking-email:" + emailKey,
+                MAX_BOOKINGS_PER_EMAIL_PER_DAY, BOOKING_EMAIL_WINDOW)) {
+            throw new TooManyRequestsException(
+                    "Demasiadas reservas con este email. Esperá e intentá de nuevo más tarde.");
+        }
+        if (!rateLimitStore.tryConsume("booking-biz:" + business.getId(),
+                MAX_BOOKINGS_PER_BUSINESS_PER_HOUR, BOOKING_BUSINESS_WINDOW)) {
+            throw new TooManyRequestsException(
+                    "Este negocio recibió demasiadas reservas en poco tiempo. Intentá más tarde.");
         }
 
         Appointment appointment = Appointment.builder()
@@ -220,11 +255,20 @@ public class AppointmentService {
     /**
      * Devuelve los detalles básicos de un turno para mostrar en la página pública de gestión.
      * No expone información sensible del cliente.
+     *
+     * <p>Para evitar enumerar turnos ajenos adivinando IDs, el acceso anónimo exige un
+     * token firmado válido (el que viaja en el link del email). Un usuario autenticado que
+     * sea el cliente del turno también puede verlo. Si no se autoriza, se responde 404
+     * (no 403) para no confirmar la existencia del turno.</p>
      */
     @Transactional(readOnly = true)
-    public PublicAppointmentResponseDto getPublicAppointmentDetails(Long appointmentId, Long viewerUserId) {
+    public PublicAppointmentResponseDto getPublicAppointmentDetails(Long appointmentId, String token, Long viewerUserId) {
         Appointment appointment = appointmentRepository.findById(appointmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
+
+        if (!canAccessAppointment(appointment, token, viewerUserId)) {
+            throw new ResourceNotFoundException("Turno no encontrado.");
+        }
 
         Business business = appointment.getStaff().getBusiness();
         String staffDisplayName = StaffUtils.displayName(appointment.getStaff());
@@ -246,11 +290,16 @@ public class AppointmentService {
 
     /**
      * Envía un OTP al email del cliente para autorizar la cancelación de un turno.
-     * Valida que el email coincida con el cliente del turno antes de enviar.
+     * Exige el token del link público (o ser el cliente autenticado) y que el email
+     * coincida con el cliente del turno, para no permitir email-bombing a terceros.
      */
-    public void sendCancellationOtp(Long appointmentId, String email) {
+    public void sendCancellationOtp(Long appointmentId, String token, Long viewerUserId, String email) {
         Appointment appointment = appointmentRepository.findById(appointmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
+
+        if (!canAccessAppointment(appointment, token, viewerUserId)) {
+            throw new ResourceNotFoundException("Turno no encontrado.");
+        }
 
         if (!appointment.getClient().getEmail().equalsIgnoreCase(email)) {
             throw new BadRequestException("El email no coincide con el cliente del turno.");
@@ -260,6 +309,19 @@ public class AppointmentService {
 
         otpService.generateAndSendOtp(email, OtpService.PURPOSE_CANCELLATION_VERIFICATION);
 
+    }
+
+    /**
+     * Autoriza el acceso a la gestión de un turno: token firmado válido para ese turno,
+     * o el usuario autenticado es el cliente del turno.
+     */
+    private boolean canAccessAppointment(Appointment appointment, String token, Long viewerUserId) {
+        if (viewerUserId != null && appointment.getClient().getId().equals(viewerUserId)) {
+            return true;
+        }
+        return publicLinkTokenService.validate(token)
+                .map(appointment.getId()::equals)
+                .orElse(false);
     }
 
     /**
@@ -438,10 +500,10 @@ public class AppointmentService {
     }
 
     private StaffResponseDto mapStaffToDto(Staff staff) {
+        // No se expone el email del staff (el DTO de turno se devuelve en el POST público de reserva).
         return StaffResponseDto.builder()
                 .id(staff.getId())
                 .customName(staff.getCustomName())
-                .userEmail(StaffUtils.email(staff))
                 .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
                 .build();
     }

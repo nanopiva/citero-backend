@@ -11,6 +11,8 @@ import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.ForbiddenException;
+import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.exception.TooManyRequestsException;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ClientReputationRepository;
@@ -18,6 +20,7 @@ import com.nanopiva.citero.repository.OtpTokenRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.security.jwt.PublicLinkTokenService;
 import com.nanopiva.citero.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,6 +52,7 @@ class AppointmentServiceTest extends IntegrationTest {
     @Autowired private AppointmentRepository appointmentRepository;
     @Autowired private ClientReputationRepository reputationRepository;
     @Autowired private OtpTokenRepository otpTokenRepository;
+    @Autowired private PublicLinkTokenService publicLinkTokenService;
 
     // Aísla el envío real de emails (Resend) durante los tests.
     @MockitoBean private EmailService emailService;
@@ -134,6 +138,33 @@ class AppointmentServiceTest extends IntegrationTest {
         assertEquals(service.getId(), result.getService().getId(), "El servicio debe coincidir con el solicitado");
         assertEquals(client.getId(), result.getClient().getId(), "El cliente debe ser el usuario autenticado");
         assertEquals(business.getName(), result.getBusinessName(), "El nombre del negocio debe coincidir");
+    }
+
+    @Test
+    void noPermiteMasDeCincoReservasPorEmailEnElDia() {
+        Business business = newBusiness("cap-email", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        String email = "cap-" + System.nanoTime() + "@test.com";
+        User client = userRepository.save(User.builder().email(email).password("x").build());
+
+        for (int i = 0; i < 5; i++) {
+            appointmentService.createAppointment(client.getId(),
+                    AppointmentCreateRequestDto.builder()
+                            .serviceId(service.getId())
+                            .staffId(staff.getId())
+                            .startTime(futureSlot(1, 9 + i))
+                            .build());
+        }
+
+        assertThrows(TooManyRequestsException.class, () ->
+                appointmentService.createAppointment(client.getId(),
+                        AppointmentCreateRequestDto.builder()
+                                .serviceId(service.getId())
+                                .staffId(staff.getId())
+                                .startTime(futureSlot(1, 14))
+                                .build()),
+                "El sexto turno del mismo email debe rechazarse");
     }
 
     @Test
@@ -262,6 +293,65 @@ class AppointmentServiceTest extends IntegrationTest {
 
         assertThrows(BadRequestException.class, () ->
                 appointmentService.cancelByGuest(appointment.getId(), "otro@test.com", "123456"));
+    }
+
+    @Test
+    void detallePublicoConTokenValido() {
+        Business business = newBusiness("public-token", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-public-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        String token = publicLinkTokenService.generate(
+                appointment.getId(), appointment.getStartTime(), business.getTimezone());
+
+        var result = appointmentService.getPublicAppointmentDetails(appointment.getId(), token, null);
+
+        assertEquals(business.getName(), result.getBusinessName());
+        assertEquals(service.getName(), result.getServiceName());
+    }
+
+    @Test
+    void detallePublicoSinTokenNiClienteEsRechazado() {
+        Business business = newBusiness("public-no-token", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-public-no-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        assertThrows(ResourceNotFoundException.class, () ->
+                appointmentService.getPublicAppointmentDetails(appointment.getId(), null, null));
+    }
+
+    @Test
+    void detallePublicoComoClienteAutenticado() {
+        Business business = newBusiness("public-client", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-public-auth");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        var result = appointmentService.getPublicAppointmentDetails(
+                appointment.getId(), null, client.getId());
+
+        assertTrue(result.isOwnedByViewer(), "El cliente autenticado debe poder ver su propio turno");
+    }
+
+    @Test
+    void enviarOtpDeCancelacionSinTokenNiClienteEsRechazado() {
+        Business business = newBusiness("otp-no-token", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-otp-no-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        assertThrows(ResourceNotFoundException.class, () ->
+                appointmentService.sendCancellationOtp(appointment.getId(), null, null, client.getEmail()));
     }
 
     @Test

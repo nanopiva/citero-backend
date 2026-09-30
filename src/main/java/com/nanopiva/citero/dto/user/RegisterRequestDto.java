@@ -19,9 +19,13 @@ public class RegisterRequestDto {
     private String email;
 
     @NotBlank(message = "La contraseña es obligatoria")
-    @Size(min = 6, max = 100, message = "La contraseña debe tener entre 6 y 100 caracteres")
+    @Size(min = 8, max = 72, message = "La contraseña debe tener entre 8 y 72 caracteres")
     private String password;
 
     @Size(max = 20)
     private String phone;
+
+    @NotBlank(message = "El código de verificación es obligatorio")
+    @Size(min = 4, max = 6, message = "El código debe tener entre 4 y 6 dígitos")
+    private String otpCode;
 }

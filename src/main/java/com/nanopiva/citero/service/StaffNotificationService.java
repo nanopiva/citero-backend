@@ -1,5 +1,6 @@
 package com.nanopiva.citero.service;
 
+import com.nanopiva.citero.util.EmailText;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,7 +50,7 @@ public class StaffNotificationService {
 
                 emailService.sendEmail(
                         email,
-                        "Has sido invitado al equipo de " + businessName,
+                        "Has sido invitado al equipo de " + EmailText.sanitizeHeader(businessName),
                         "emails/staff-invitation-registered",
                         vars
                 );
@@ -63,7 +64,7 @@ public class StaffNotificationService {
 
                 emailService.sendEmail(
                         email,
-                        "Te invitamos a unirte al equipo de " + businessName,
+                        "Te invitamos a unirte al equipo de " + EmailText.sanitizeHeader(businessName),
                         "emails/staff-invitation-guest",
                         vars
                 );

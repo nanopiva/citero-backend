@@ -19,6 +19,7 @@ import java.time.LocalTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @Transactional
@@ -74,17 +75,33 @@ class BusinessConfigServiceTest extends IntegrationTest {
     }
 
     @Test
-    void getConfigReturnsDefaults() {
+    void getConfigReturnsFullConfigForOwner() {
         User owner = persistUser("get");
         Business business = seedBusiness(owner, uniqueSlug("get"), true);
 
-        BusinessConfigResponseDto config = configService.getConfigByBusinessId(business.getId());
+        BusinessConfigResponseDto config = configService.getConfigByBusinessId(business.getId(), owner.getId());
 
         assertEquals("PUBLIC", config.getReservationMode(), "El modo por defecto es PUBLIC");
         assertEquals(24, config.getCancellationToleranceHours(), "La tolerancia por defecto es 24 horas");
         assertEquals(3, config.getMaxStrikes(), "El máximo de strikes por defecto es 3");
         assertEquals(LocalTime.of(9, 0), config.getDefaultOpeningTime());
         assertEquals(LocalTime.of(18, 0), config.getDefaultClosingTime());
+    }
+
+    @Test
+    void getConfigForAnonymousOnlyExposesReservationMode() {
+        User owner = persistUser("anon");
+        Business business = seedBusiness(owner, uniqueSlug("anon"), true);
+
+        BusinessConfigResponseDto actual = configService.getConfigByBusinessId(business.getId(), null);
+        BusinessConfigResponseDto otherUser = configService.getConfigByBusinessId(
+                business.getId(), persistUser("anon-other").getId());
+
+        assertEquals("PUBLIC", actual.getReservationMode(), "El modo de reserva sí se expone");
+        assertNull(actual.getMaxStrikes(), "El anónimo no debe ver maxStrikes");
+        assertNull(actual.getCancellationToleranceHours(), "El anónimo no debe ver la tolerancia");
+        assertEquals("PUBLIC", otherUser.getReservationMode(), "Un usuario que no es dueño/staff entra como público");
+        assertNull(otherUser.getMaxStrikes(), "Un usuario ajeno no debe ver maxStrikes");
     }
 
     @Test
@@ -134,7 +151,8 @@ class BusinessConfigServiceTest extends IntegrationTest {
         User owner = persistUser("no-config");
         Business business = seedBusiness(owner, uniqueSlug("no-config"), false);
 
-        assertThrows(ResourceNotFoundException.class, () -> configService.getConfigByBusinessId(business.getId()),
+        assertThrows(ResourceNotFoundException.class,
+                () -> configService.getConfigByBusinessId(business.getId(), owner.getId()),
                 "Un negocio sin configuración debe producir ResourceNotFoundException");
     }
 }

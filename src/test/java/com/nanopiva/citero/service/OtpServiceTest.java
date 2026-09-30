@@ -119,6 +119,19 @@ class OtpServiceTest extends IntegrationTest {
     }
 
     @Test
+    void superarElLimitePorDestinatarioEsRechazado() {
+        String target = uniqueTarget("otp-cap");
+
+        for (int i = 0; i < 5; i++) {
+            otpService.generateAndSendOtp(target, OtpService.PURPOSE_GUEST_VERIFICATION);
+        }
+
+        assertThrows(BadRequestException.class,
+                () -> otpService.generateAndSendOtp(target, OtpService.PURPOSE_GUEST_VERIFICATION),
+                "El sexto OTP para el mismo destinatario debe rechazarse por el cap");
+    }
+
+    @Test
     void otpYaUsadoNoPuedeReutilizarse() {
         String target = uniqueTarget("otp-reuse");
         otpService.generateAndSendOtp(target, OtpService.PURPOSE_GUEST_VERIFICATION);

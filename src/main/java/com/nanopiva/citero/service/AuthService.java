@@ -1,14 +1,17 @@
 package com.nanopiva.citero.service;
 
 import com.nanopiva.citero.dto.user.LoginRequestDto;
+import com.nanopiva.citero.dto.user.RegisterRequestDto;
 import com.nanopiva.citero.dto.user.UserResponseDto;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.UnauthorizedException;
 import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.security.CommonPasswordCheck;
 import com.nanopiva.citero.security.UserDetailsImpl;
 import com.nanopiva.citero.security.jwt.JwtService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -17,6 +20,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -55,6 +59,11 @@ public class AuthService {
         User user = userRepository.findById(userDetails.getId())
                 .orElseThrow(() -> new BadRequestException("Email o contraseña incorrectos"));
 
+        // Cuenta sin email verificado: no puede ingresar (evita reclamos por email ajeno).
+        if (!Boolean.TRUE.equals(user.getEmailVerified())) {
+            throw new UnauthorizedException("Tenés que verificar tu email antes de ingresar.");
+        }
+
         // Reconcilia invitaciones de staff pendientes para este email: cubre a quien se
         // registró por su cuenta y a cuentas que ya existían antes de ser invitadas.
         userService.linkPendingStaff(user);
@@ -62,6 +71,34 @@ public class AuthService {
         String accessToken = jwtService.generateTokenFromUserDetails(userDetails);
         RefreshTokenService.RefreshTokenPair refresh = refreshTokenService.issue(user, userAgent, ipAddress);
 
+        return new AuthResult(accessToken, mapToUserResponseDto(user), refresh.rawToken());
+    }
+
+    /** Envía el OTP de verificación de email; sólo lo manda si el email es registrable. */
+    @Transactional
+    public void requestRegistrationOtp(String email) {
+        boolean registrable = userRepository.findByEmail(email)
+                .map(user -> Boolean.TRUE.equals(user.getIsGuest()))
+                .orElse(true);
+        try {
+            otpService.generateAndSendOtp(email, OtpService.PURPOSE_EMAIL_VERIFICATION, registrable);
+        } catch (BadRequestException ex) {
+            log.debug("OTP de registro no enviado para {}: {}", email, ex.getMessage());
+        }
+    }
+
+    /** Registra una cuenta validando el OTP de email; queda verificada y logueada. */
+    @Transactional
+    public AuthResult register(RegisterRequestDto requestDto, String userAgent, String ipAddress) {
+        otpService.verifyOtp(
+                requestDto.getEmail(), requestDto.getOtpCode(), OtpService.PURPOSE_EMAIL_VERIFICATION);
+
+        UserResponseDto created = userService.register(requestDto);
+        User user = userRepository.findById(created.getId())
+                .orElseThrow(() -> new IllegalStateException("Usuario recién creado no encontrado."));
+
+        String accessToken = jwtService.generateTokenFromUserDetails(UserDetailsImpl.build(user));
+        RefreshTokenService.RefreshTokenPair refresh = refreshTokenService.issue(user, userAgent, ipAddress);
         return new AuthResult(accessToken, mapToUserResponseDto(user), refresh.rawToken());
     }
 
@@ -89,22 +126,19 @@ public class AuthService {
         refreshTokenService.revoke(rawRefreshToken);
     }
 
-    /**
-     * Solicita el reseteo de contraseña.
-     * Si el email existe, genera y envía un OTP con propósito PASSWORD_RESET.
-     * Si no existe, no hace nada (por seguridad, para no revelar si el email está registrado).
-     */
+    /** Solicita el reseteo; envía el OTP sólo si la cuenta existe (respuesta uniforme). */
     @Transactional
     public void requestPasswordReset(String email) {
-        userRepository.findByEmail(email).ifPresent(user -> {
-            otpService.generateAndSendOtp(user.getEmail(), OtpService.PURPOSE_PASSWORD_RESET);
-        });
+        boolean exists = userRepository.findByEmail(email).isPresent();
+        try {
+            // Token siempre (trabajo uniforme); se envía sólo si la cuenta existe.
+            otpService.generateAndSendOtp(email, OtpService.PURPOSE_PASSWORD_RESET, exists);
+        } catch (BadRequestException ex) {
+            log.debug("OTP de recuperación no enviado para {}: {}", email, ex.getMessage());
+        }
     }
 
-    /**
-     * Resetea la contraseña usando el OTP enviado.
-     * Valida el OTP, busca el usuario, hashea la nueva contraseña y la guarda.
-     */
+    /** Resetea la contraseña validando el OTP; la cuenta queda verificada. */
     @Transactional
     public void resetPassword(String email, String otpCode, String newPassword) {
         otpService.verifyOtp(email, otpCode, OtpService.PURPOSE_PASSWORD_RESET);
@@ -112,8 +146,17 @@ public class AuthService {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new BadRequestException("Usuario no encontrado."));
 
+        if (CommonPasswordCheck.isCommon(newPassword)) {
+            throw new BadRequestException("Esa contraseña es demasiado común. Elegí otra.");
+        }
+
         user.setPassword(passwordEncoder.encode(newPassword));
+        // El OTP validó el email: la cuenta queda verificada.
+        user.setEmailVerified(true);
         userRepository.save(user);
+
+        // Cierra las sesiones existentes: si el token estaba comprometido, deja de servir.
+        refreshTokenService.revokeAllForUser(user);
     }
 
     private UserResponseDto mapToUserResponseDto(User user) {

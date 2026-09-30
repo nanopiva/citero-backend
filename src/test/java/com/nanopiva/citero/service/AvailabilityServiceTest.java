@@ -4,13 +4,14 @@ import com.nanopiva.citero.dto.appointment.AvailabilityResponseDto;
 import com.nanopiva.citero.entity.Appointment;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.BusinessConfig;
-import com.nanopiva.citero.entity.BusinessSchedule;
+import com.nanopiva.citero.entity.BusinessScheduleDay;
+import com.nanopiva.citero.entity.BusinessSchedulePeriod;
 import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
-import com.nanopiva.citero.repository.BusinessScheduleRepository;
+import com.nanopiva.citero.repository.BusinessScheduleDayRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
@@ -20,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -39,7 +41,7 @@ class AvailabilityServiceTest extends IntegrationTest {
     @Autowired private AvailabilityService availabilityService;
     @Autowired private UserRepository userRepository;
     @Autowired private BusinessRepository businessRepository;
-    @Autowired private BusinessScheduleRepository scheduleRepository;
+    @Autowired private BusinessScheduleDayRepository scheduleDayRepository;
     @Autowired private ServiceRepository serviceRepository;
     @Autowired private StaffRepository staffRepository;
     @Autowired private AppointmentRepository appointmentRepository;
@@ -86,6 +88,22 @@ class AvailabilityServiceTest extends IntegrationTest {
                 .build());
     }
 
+    private void seedWeekly(Business business, DayOfWeek dayOfWeek, boolean closed, LocalTime... openClosePairs) {
+        BusinessScheduleDay day = BusinessScheduleDay.builder()
+                .business(business)
+                .dayOfWeek(BusinessScheduleDay.DayOfWeek.valueOf(dayOfWeek.name()))
+                .isClosed(closed)
+                .build();
+        for (int i = 0; i + 1 < openClosePairs.length; i += 2) {
+            day.getPeriods().add(BusinessSchedulePeriod.builder()
+                    .scheduleDay(day)
+                    .openTime(openClosePairs[i])
+                    .closeTime(openClosePairs[i + 1])
+                    .build());
+        }
+        scheduleDayRepository.save(day);
+    }
+
     private Appointment newAppointment(User client, Staff staff, com.nanopiva.citero.entity.Service service,
                                        LocalDateTime start) {
         return appointmentRepository.save(Appointment.builder()
@@ -104,6 +122,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         com.nanopiva.citero.entity.Service service = newService(business);
         newStaff(business, service);
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
 
         AvailabilityResponseDto response = availabilityService.getAvailableSlots(
                 business.getId(), service.getId(), null, date);
@@ -120,10 +139,53 @@ class AvailabilityServiceTest extends IntegrationTest {
     }
 
     @Test
+    void franjaPartidaSoloOfreceDentroDeLasFranjas() {
+        Business business = newBusiness("split");
+        com.nanopiva.citero.entity.Service service = newService(business);
+        newStaff(business, service);
+        LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false,
+                LocalTime.of(7, 0), LocalTime.of(12, 0),
+                LocalTime.of(17, 0), LocalTime.of(20, 0));
+
+        List<LocalTime> slots = availabilityService
+                .getAvailableSlots(business.getId(), service.getId(), null, date)
+                .getAvailableSlots();
+
+        assertTrue(slots.contains(LocalTime.of(7, 0)), "Debe ofrecer el arranque de la primera franja");
+        assertTrue(slots.contains(LocalTime.of(11, 30)), "Debe ofrecer el último slot que entra en la mañana");
+        assertFalse(slots.contains(LocalTime.of(11, 45)), "No debe ofrecer un slot que cruza el cierre de la franja");
+        assertTrue(slots.contains(LocalTime.of(17, 0)), "Debe ofrecer el arranque de la segunda franja");
+        assertTrue(slots.contains(LocalTime.of(19, 30)), "Debe ofrecer el último slot que entra en la tarde");
+        assertFalse(slots.contains(LocalTime.of(12, 0)), "No debe ofrecer turnos dentro del hueco");
+        assertFalse(slots.contains(LocalTime.of(16, 45)), "No debe ofrecer turnos dentro del hueco");
+    }
+
+    @Test
+    void servicioNoPuedeCruzarElHueco() {
+        Business business = newBusiness("cross");
+        com.nanopiva.citero.entity.Service service = serviceRepository.save(
+                com.nanopiva.citero.entity.Service.builder()
+                        .business(business).name("Largo").durationMinutes(90).price(BigDecimal.TEN).build());
+        LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false,
+                LocalTime.of(9, 0), LocalTime.of(12, 0),
+                LocalTime.of(17, 0), LocalTime.of(20, 0));
+
+        // 11:00 + 90 min = 12:30 cruza el hueco: debe rechazarse.
+        assertThrows(BadRequestException.class, () -> availabilityService.validateSlotRules(
+                business, service, LocalDateTime.of(date, LocalTime.of(11, 0))));
+
+        // 09:00 + 90 min = 10:30 entra completo en la primera franja.
+        availabilityService.validateSlotRules(business, service, LocalDateTime.of(date, LocalTime.of(9, 0)));
+    }
+
+    @Test
     void franjaFueraDeHorarioEsRechazada() {
         Business business = newBusiness("horario");
         com.nanopiva.citero.entity.Service service = newService(business);
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
 
         assertThrows(BadRequestException.class, () -> availabilityService.validateSlotRules(
                 business, service, LocalDateTime.of(date, LocalTime.of(8, 0))),
@@ -144,14 +206,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         com.nanopiva.citero.entity.Service service = newService(business);
         newStaff(business, service);
         LocalDate date = LocalDate.now().plusDays(1);
-
-        scheduleRepository.save(BusinessSchedule.builder()
-                .business(business)
-                .dayOfWeek(BusinessSchedule.DayOfWeek.valueOf(date.getDayOfWeek().name()))
-                .openTime(LocalTime.of(9, 0))
-                .closeTime(LocalTime.of(18, 0))
-                .isClosed(true)
-                .build());
+        seedWeekly(business, date.getDayOfWeek(), true);
 
         AvailabilityResponseDto response = availabilityService.getAvailableSlots(
                 business.getId(), service.getId(), null, date);
@@ -166,6 +221,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         Staff staff = newStaff(business, service);
         User client = newUser("client-ocupado");
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
         LocalDateTime start = LocalDateTime.of(date, LocalTime.of(10, 0));
 
         newAppointment(client, staff, service, start);
@@ -188,6 +244,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         Staff staffB = newStaff(business, service);
         User client = newUser("client-assign");
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
 
         newAppointment(client, staffA, service, LocalDateTime.of(date, LocalTime.of(10, 0)));
 
@@ -204,6 +261,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         Staff staffA = newStaff(business, service);
         newStaff(business, service);
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
 
         Staff selected = availabilityService.assignAvailableStaff(
                 business, service, LocalDateTime.of(date, LocalTime.of(11, 0)));
@@ -219,6 +277,7 @@ class AvailabilityServiceTest extends IntegrationTest {
         Staff staff = newStaff(business, service);
         User client = newUser("client-assign-full");
         LocalDate date = LocalDate.now().plusDays(1);
+        seedWeekly(business, date.getDayOfWeek(), false, LocalTime.of(9, 0), LocalTime.of(18, 0));
         LocalDateTime start = LocalDateTime.of(date, LocalTime.of(10, 0));
 
         newAppointment(client, staff, service, start);

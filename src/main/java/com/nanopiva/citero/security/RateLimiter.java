@@ -1,5 +1,7 @@
 package com.nanopiva.citero.security;
 
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -8,17 +10,23 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Limitador de tasa en memoria con ventana fija.
- *
- * <p>Es una defensa básica contra fuerza bruta y abuso. Al ser estado en memoria, cada
- * instancia del backend lleva su propio conteo; para un despliegue con varias instancias
- * o balanceo horizontal conviene respaldarlo con un almacén compartido (p. ej. Redis).</p>
+ * Rate limiting en memoria con ventana fija (implementación por defecto de {@link RateLimitStore}).
+ * Sirve para una sola instancia; con varias hay que usar un store compartido.
  */
+@Slf4j
 @Component
-public class RateLimiter {
+public class RateLimiter implements RateLimitStore {
 
     private final Map<String, Window> windows = new ConcurrentHashMap<>();
 
+    /** Avisa que el conteo es local al proceso (una sola instancia). */
+    @PostConstruct
+    void warnAboutLocalState() {
+        log.warn("Rate limiting con estado EN MEMORIA (una sola instancia). "
+                + "Si se despliega más de una instancia o serverless, reemplazar por un store compartido.");
+    }
+
+    @Override
     public boolean tryConsume(String key, int limit, Duration window) {
         long now = System.currentTimeMillis();
         Window current = windows.compute(key, (k, existing) -> {

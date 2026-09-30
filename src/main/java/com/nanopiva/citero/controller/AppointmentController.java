@@ -81,9 +81,10 @@ public class AppointmentController {
     @GetMapping("/public/{id}")
     public ResponseEntity<PublicAppointmentResponseDto> getPublicAppointmentDetails(
             @PathVariable Long id,
+            @RequestParam(required = false) String token,
             @AuthenticationPrincipal UserDetailsImpl userDetails) {
         Long viewerId = userDetails != null ? userDetails.getId() : null;
-        return ResponseEntity.ok(appointmentService.getPublicAppointmentDetails(id, viewerId));
+        return ResponseEntity.ok(appointmentService.getPublicAppointmentDetails(id, token, viewerId));
     }
 
     /**
@@ -93,8 +94,11 @@ public class AppointmentController {
     @PostMapping("/public/{id}/send-cancellation-otp")
     public ResponseEntity<Void> sendCancellationOtp(
             @PathVariable Long id,
-            @RequestParam String email) {
-        appointmentService.sendCancellationOtp(id, email);
+            @RequestParam String email,
+            @RequestParam(required = false) String token,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        Long viewerId = userDetails != null ? userDetails.getId() : null;
+        appointmentService.sendCancellationOtp(id, token, viewerId, email);
         return ResponseEntity.noContent().build();
     }
 

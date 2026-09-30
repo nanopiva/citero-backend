@@ -2,11 +2,11 @@ package com.nanopiva.citero.service;
 
 import com.nanopiva.citero.dto.business.BusinessCreateRequestDto;
 import com.nanopiva.citero.dto.business.BusinessResponseDto;
-import com.nanopiva.citero.dto.business.BusinessConfigResponseDto;
 import com.nanopiva.citero.dto.business.BusinessUpdateDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.BusinessConfig;
-import com.nanopiva.citero.entity.BusinessSchedule;
+import com.nanopiva.citero.entity.BusinessScheduleDay;
+import com.nanopiva.citero.entity.BusinessSchedulePeriod;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.DuplicateResourceException;
@@ -86,7 +86,7 @@ public class BusinessService {
         business.setConfig(defaultConfig);
 
         // Sin horarios, el motor de disponibilidad no ofrece turnos.
-        business.getSchedules().addAll(createDefaultSchedules(business, defaultConfig));
+        business.getScheduleDays().addAll(createDefaultSchedules(business, defaultConfig));
 
         Business savedBusiness = businessRepository.save(business);
 
@@ -117,15 +117,21 @@ public class BusinessService {
      * cierre por defecto de la configuración. Todos los días quedan abiertos; el dueño
      * puede cerrar los que no atienda desde la configuración.
      */
-    private List<BusinessSchedule> createDefaultSchedules(Business business, BusinessConfig config) {
-        return Arrays.stream(BusinessSchedule.DayOfWeek.values())
-                .map(day -> BusinessSchedule.builder()
-                        .business(business)
-                        .dayOfWeek(day)
-                        .openTime(config.getDefaultOpeningTime())
-                        .closeTime(config.getDefaultClosingTime())
-                        .isClosed(false)
-                        .build())
+    private List<BusinessScheduleDay> createDefaultSchedules(Business business, BusinessConfig config) {
+        return Arrays.stream(BusinessScheduleDay.DayOfWeek.values())
+                .map(day -> {
+                    BusinessScheduleDay scheduleDay = BusinessScheduleDay.builder()
+                            .business(business)
+                            .dayOfWeek(day)
+                            .isClosed(false)
+                            .build();
+                    scheduleDay.getPeriods().add(BusinessSchedulePeriod.builder()
+                            .scheduleDay(scheduleDay)
+                            .openTime(config.getDefaultOpeningTime())
+                            .closeTime(config.getDefaultClosingTime())
+                            .build());
+                    return scheduleDay;
+                })
                 .toList();
     }
 
@@ -136,7 +142,6 @@ public class BusinessService {
                 .slug(business.getSlug())
                 .description(business.getDescription())
                 .createdAt(business.getCreatedAt())
-                .config(mapConfigToDto(business.getConfig()))
                 .logoUrl(business.getLogoUrl())
                 .address(business.getAddress())
                 .latitude(business.getLatitude())
@@ -149,21 +154,6 @@ public class BusinessService {
                 .twitterUrl(business.getTwitterUrl())
                 .whatsappNumber(business.getWhatsappNumber())
                 .timezone(business.getTimezone())
-                .build();
-    }
-
-    private BusinessConfigResponseDto mapConfigToDto(BusinessConfig config) {
-        if (config == null) return null;
-        return BusinessConfigResponseDto.builder()
-                .reservationMode(config.getReservationMode().name())
-                .cancellationToleranceHours(config.getCancellationToleranceHours())
-                .enablePenalties(config.getEnablePenalties())
-                .maxStrikes(config.getMaxStrikes())
-                .defaultOpeningTime(config.getDefaultOpeningTime())
-                .defaultClosingTime(config.getDefaultClosingTime())
-                .enableReminders(config.getEnableReminders())
-                .reminder24hEnabled(config.getReminder24hEnabled())
-                .reminder2hEnabled(config.getReminder2hEnabled())
                 .build();
     }
 

@@ -1,6 +1,7 @@
 package com.nanopiva.citero.service;
 
 import com.nanopiva.citero.dto.user.LoginRequestDto;
+import com.nanopiva.citero.dto.user.RegisterRequestDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.OtpToken;
 import com.nanopiva.citero.entity.Staff;
@@ -50,6 +51,7 @@ class AuthServiceTest extends IntegrationTest {
         return userRepository.save(User.builder()
                 .email(email)
                 .password(passwordEncoder.encode(rawPassword))
+                .emailVerified(true)
                 .build());
     }
 
@@ -162,8 +164,8 @@ class AuthServiceTest extends IntegrationTest {
         String unknown = uniqueEmail("forgot-unknown");
         assertDoesNotThrow(() -> authService.requestPasswordReset(unknown),
                 "Un email inexistente no debe revelar su ausencia con una excepción");
-        assertTrue(otpTokenRepository.findAll().stream().noneMatch(t -> unknown.equals(t.getTarget())),
-                "No debe generarse OTP para un email inexistente");
+        assertTrue(otpTokenRepository.findAll().stream().anyMatch(t -> unknown.equals(t.getTarget())),
+                "Se crea el token para ambos casos (trabajo uniforme) aunque no se envíe el email");
     }
 
     @Test
@@ -181,5 +183,48 @@ class AuthServiceTest extends IntegrationTest {
 
         assertThrows(BadRequestException.class, () -> authService.resetPassword(email, code, "otra123"),
                 "El OTP es de un solo uso");
+    }
+
+    @Test
+    void registerConOtpVerificadoCreaCuentaVerificada() {
+        String email = uniqueEmail("register-verified");
+        authService.requestRegistrationOtp(email);
+        String code = latestOtpCode(email);
+
+        AuthService.AuthResult result = authService.register(
+                RegisterRequestDto.builder().email(email).password("secret123").otpCode(code).build(),
+                "JUnit", "127.0.0.1");
+
+        assertNotNull(result.accessToken(), "Debe emitirse un access token al registrar");
+        User user = userRepository.findByEmail(email).orElseThrow();
+        assertTrue(Boolean.TRUE.equals(user.getEmailVerified()), "La cuenta debe quedar verificada");
+    }
+
+    @Test
+    void loginDeCuentaNoVerificadaEsRechazado() {
+        String email = uniqueEmail("unverified");
+        userRepository.save(User.builder()
+                .email(email)
+                .password(passwordEncoder.encode("secret123"))
+                .emailVerified(false)
+                .build());
+
+        assertThrows(UnauthorizedException.class, () -> authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(), "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void resetPasswordRevocaLasSesionesActivas() {
+        String email = uniqueEmail("reset-revoke");
+        User user = createUser(email, "vieja123");
+        RefreshTokenService.RefreshTokenPair pair = refreshTokenService.issue(user, "JUnit", "127.0.0.1");
+
+        authService.requestPasswordReset(email);
+        String code = latestOtpCode(email);
+        authService.resetPassword(email, code, "nueva123");
+
+        assertTrue(refreshTokenService.rotate(pair.rawToken(), "JUnit", "127.0.0.1").isEmpty(),
+                "Tras resetear la contraseña, las sesiones previas deben quedar invalidadas");
     }
 }

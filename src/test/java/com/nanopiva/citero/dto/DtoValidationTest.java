@@ -52,6 +52,7 @@ class DtoValidationTest extends IntegrationTest {
         RegisterRequestDto dto = RegisterRequestDto.builder()
                 .email(uniqueEmail("register"))
                 .password("secret123")
+                .otpCode("123456")
                 .build();
 
         assertTrue(violations(dto).isEmpty(), "Un registro válido no debe tener violaciones");
@@ -67,7 +68,7 @@ class DtoValidationTest extends IntegrationTest {
         Map<String, String> violations = violations(dto);
 
         assertEquals("El formato del email no es válido", violations.get("email"));
-        assertEquals("La contraseña debe tener entre 6 y 100 caracteres", violations.get("password"));
+        assertEquals("La contraseña debe tener entre 8 y 72 caracteres", violations.get("password"));
     }
 
     @Test
@@ -338,7 +339,7 @@ class DtoValidationTest extends IntegrationTest {
 
         assertEquals("El formato del email no es válido.", violations.get("email"));
         assertEquals("El código OTP debe tener entre 4 y 6 dígitos.", violations.get("otpCode"));
-        assertEquals("La contraseña debe tener entre 6 y 100 caracteres.", violations.get("newPassword"));
+        assertEquals("La contraseña debe tener entre 8 y 72 caracteres.", violations.get("newPassword"));
     }
 
     @Test

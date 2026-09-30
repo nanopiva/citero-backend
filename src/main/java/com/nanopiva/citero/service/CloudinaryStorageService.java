@@ -30,7 +30,26 @@ public class CloudinaryStorageService implements StorageService {
 
     @Override
     public String upload(MultipartFile file, String folder, ImageType type) {
-        validate(file);
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("El archivo está vacío.");
+        }
+        if (file.getSize() > MAX_FILE_SIZE) {
+            throw new BadRequestException("La imagen supera el máximo permitido de 2 MB.");
+        }
+        String contentType = file.getContentType();
+        if (contentType == null
+                || !ALLOWED_CONTENT_TYPES.contains(contentType.toLowerCase(Locale.ROOT))) {
+            throw new BadRequestException("Formato no permitido. Usá JPG, PNG o WEBP.");
+        }
+
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (IOException e) {
+            throw new BadRequestException("No se pudo leer el archivo enviado.");
+        }
+
+        validateSignature(contentType, bytes);
 
         String publicId = UUID.randomUUID().toString();
         String fullFolder = baseFolder + "/" + folder;
@@ -47,15 +66,13 @@ public class CloudinaryStorageService implements StorageService {
                             .height(type.getMaxHeight())
             );
 
-            Map<?, ?> result = cloudinary.uploader().upload(file.getBytes(), options);
+            Map<?, ?> result = cloudinary.uploader().upload(bytes, options);
             Object url = result.get("secure_url");
 
             if (url == null) {
                 throw new BadRequestException("No se pudo obtener la URL de la imagen subida.");
             }
             return url.toString();
-        } catch (IOException e) {
-            throw new BadRequestException("No se pudo leer el archivo enviado.");
         } catch (BadRequestException e) {
             throw e;
         } catch (Exception e) {
@@ -63,17 +80,21 @@ public class CloudinaryStorageService implements StorageService {
         }
     }
 
-    private void validate(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new BadRequestException("El archivo está vacío.");
-        }
-        String contentType = file.getContentType();
-        if (contentType == null
-                || !ALLOWED_CONTENT_TYPES.contains(contentType.toLowerCase(Locale.ROOT))) {
-            throw new BadRequestException("Formato no permitido. Usá JPG, PNG o WEBP.");
-        }
-        if (file.getSize() > MAX_FILE_SIZE) {
-            throw new BadRequestException("La imagen supera el máximo permitido de 2 MB.");
+    /**
+     * Verifica que la firma real del archivo coincida con el {@code Content-Type} declarado.
+     * Un atacante puede mentir el header, pero no la firma.
+     */
+    private void validateSignature(String contentType, byte[] bytes) {
+        ImageSignature expected = switch (contentType.toLowerCase(Locale.ROOT)) {
+            case "image/jpeg" -> ImageSignature.JPEG;
+            case "image/png" -> ImageSignature.PNG;
+            case "image/webp" -> ImageSignature.WEBP;
+            default -> null;
+        };
+        ImageSignature actual = ImageSignature.detect(bytes);
+
+        if (expected == null || actual != expected) {
+            throw new BadRequestException("El archivo no es una imagen válida. Usá JPG, PNG o WEBP.");
         }
     }
 }

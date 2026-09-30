@@ -3,12 +3,12 @@ package com.nanopiva.citero;
 import com.nanopiva.citero.dto.appointment.AvailabilityResponseDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.BusinessConfig;
-import com.nanopiva.citero.entity.BusinessSchedule;
+import com.nanopiva.citero.entity.BusinessScheduleDay;
 import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.repository.BusinessRepository;
-import com.nanopiva.citero.repository.BusinessScheduleRepository;
+import com.nanopiva.citero.repository.BusinessScheduleDayRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
@@ -36,7 +36,7 @@ class AvailabilityFallbackTest extends IntegrationTest {
     @Autowired private AvailabilityService availabilityService;
     @Autowired private UserRepository userRepository;
     @Autowired private BusinessRepository businessRepository;
-    @Autowired private BusinessScheduleRepository scheduleRepository;
+    @Autowired private BusinessScheduleDayRepository scheduleDayRepository;
     @Autowired private ServiceRepository serviceRepository;
     @Autowired private StaffRepository staffRepository;
 
@@ -103,11 +103,9 @@ class AvailabilityFallbackTest extends IntegrationTest {
         setUpBusinessWithoutSchedules("fallback-closed");
         LocalDate date = LocalDate.now().plusDays(1);
 
-        scheduleRepository.save(BusinessSchedule.builder()
+        scheduleDayRepository.save(BusinessScheduleDay.builder()
                 .business(business)
-                .dayOfWeek(BusinessSchedule.DayOfWeek.valueOf(date.getDayOfWeek().name()))
-                .openTime(LocalTime.of(9, 0))
-                .closeTime(LocalTime.of(18, 0))
+                .dayOfWeek(BusinessScheduleDay.DayOfWeek.valueOf(date.getDayOfWeek().name()))
                 .isClosed(true)
                 .build());
 
