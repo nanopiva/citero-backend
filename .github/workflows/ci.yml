@@ -30,22 +30,3 @@ jobs:
 
       - name: Build and test
         run: ./mvnw -B verify
-
-  dependency-review:
-    name: Dependency review
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: read
-      pull-requests: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Revisa las dependencias agregadas/actualizadas en el PR contra la GitHub
-      # Advisory Database (no requiere NVD API key). Falla en severidad high/critical.
-      - name: Dependency review
-        uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high

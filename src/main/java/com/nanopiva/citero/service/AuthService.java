@@ -90,6 +90,11 @@ public class AuthService {
     /** Registra una cuenta validando el OTP de email; queda verificada y logueada. */
     @Transactional
     public AuthResult register(RegisterRequestDto requestDto, String userAgent, String ipAddress) {
+        // Valida la contraseña ANTES de consumir el OTP (para no gastarlo con una inválida).
+        if (CommonPasswordCheck.isCommon(requestDto.getPassword())) {
+            throw new BadRequestException("Esa contraseña es demasiado común. Elegí otra.");
+        }
+
         otpService.verifyOtp(
                 requestDto.getEmail(), requestDto.getOtpCode(), OtpService.PURPOSE_EMAIL_VERIFICATION);
 
