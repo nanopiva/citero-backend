@@ -10,6 +10,7 @@ import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.security.CommonPasswordCheck;
 import com.nanopiva.citero.security.UserDetailsImpl;
 import com.nanopiva.citero.security.jwt.JwtService;
+import com.nanopiva.citero.util.Emails;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -47,17 +48,17 @@ public class AuthService {
         try {
             authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(
-                            requestDto.getEmail(),
+                            Emails.normalize(requestDto.getEmail()),
                             requestDto.getPassword()
                     )
             );
         } catch (AuthenticationException ex) {
-            throw new BadRequestException("Email o contraseña incorrectos");
+            throw new UnauthorizedException("Email o contraseña incorrectos");
         }
 
         UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
         User user = userRepository.findById(userDetails.getId())
-                .orElseThrow(() -> new BadRequestException("Email o contraseña incorrectos"));
+                .orElseThrow(() -> new UnauthorizedException("Email o contraseña incorrectos"));
 
         // Cuenta sin email verificado: no puede ingresar (evita reclamos por email ajeno).
         if (!Boolean.TRUE.equals(user.getEmailVerified())) {
@@ -77,7 +78,7 @@ public class AuthService {
     /** Envía el OTP de verificación de email; sólo lo manda si el email es registrable. */
     @Transactional
     public void requestRegistrationOtp(String email) {
-        boolean registrable = userRepository.findByEmail(email)
+        boolean registrable = userRepository.findByEmail(Emails.normalize(email))
                 .map(user -> Boolean.TRUE.equals(user.getIsGuest()))
                 .orElse(true);
         try {
@@ -134,7 +135,7 @@ public class AuthService {
     /** Solicita el reseteo; envía el OTP sólo si la cuenta existe (respuesta uniforme). */
     @Transactional
     public void requestPasswordReset(String email) {
-        boolean exists = userRepository.findByEmail(email).isPresent();
+        boolean exists = userRepository.findByEmail(Emails.normalize(email)).isPresent();
         try {
             // Token siempre (trabajo uniforme); se envía sólo si la cuenta existe.
             otpService.generateAndSendOtp(email, OtpService.PURPOSE_PASSWORD_RESET, exists);
@@ -146,9 +147,10 @@ public class AuthService {
     /** Resetea la contraseña validando el OTP; la cuenta queda verificada. */
     @Transactional
     public void resetPassword(String email, String otpCode, String newPassword) {
-        otpService.verifyOtp(email, otpCode, OtpService.PURPOSE_PASSWORD_RESET);
+        String normalizedEmail = Emails.normalize(email);
+        otpService.verifyOtp(normalizedEmail, otpCode, OtpService.PURPOSE_PASSWORD_RESET);
 
-        User user = userRepository.findByEmail(email)
+        User user = userRepository.findByEmail(normalizedEmail)
                 .orElseThrow(() -> new BadRequestException("Usuario no encontrado."));
 
         if (CommonPasswordCheck.isCommon(newPassword)) {

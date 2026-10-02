@@ -187,15 +187,22 @@ public class BusinessService {
             business.setLogoUrl(updateDto.getLogoUrl());
         }
 
-        // Campos opcionales (lógica PATCH)
-        if (updateDto.getAddress() != null) {
-            business.setAddress(updateDto.getAddress());
-        }
-        if (updateDto.getLatitude() != null) {
-            business.setLatitude(updateDto.getLatitude());
-        }
-        if (updateDto.getLongitude() != null) {
-            business.setLongitude(updateDto.getLongitude());
+        // Campos opcionales (lógica PATCH). Dirección vacía = quitar ubicación.
+        boolean clearLocation = updateDto.getAddress() != null && updateDto.getAddress().isBlank();
+        if (clearLocation) {
+            business.setAddress(null);
+            business.setLatitude(null);
+            business.setLongitude(null);
+        } else {
+            if (updateDto.getAddress() != null) {
+                business.setAddress(updateDto.getAddress());
+            }
+            if (updateDto.getLatitude() != null) {
+                business.setLatitude(updateDto.getLatitude());
+            }
+            if (updateDto.getLongitude() != null) {
+                business.setLongitude(updateDto.getLongitude());
+            }
         }
         if (updateDto.getPhone() != null) {
             business.setPhone(updateDto.getPhone());

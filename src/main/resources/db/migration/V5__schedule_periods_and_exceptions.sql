@@ -27,4 +27,15 @@ CREATE TABLE business_schedule_periods (
     CONSTRAINT fk_schedule_periods_day FOREIGN KEY (schedule_day_id) REFERENCES business_schedule_days (id) ON DELETE CASCADE
 );
 
+-- Migrar los horarios existentes (una franja por día) a las tablas nuevas antes de borrar.
+INSERT INTO business_schedule_days (business_id, day_of_week, is_closed)
+SELECT business_id, day_of_week, is_closed FROM business_schedules;
+
+INSERT INTO business_schedule_periods (schedule_day_id, open_time, close_time)
+SELECT d.id, s.open_time, s.close_time
+FROM business_schedules s
+JOIN business_schedule_days d
+    ON d.business_id = s.business_id AND d.day_of_week = s.day_of_week
+WHERE s.open_time < s.close_time;
+
 DROP TABLE business_schedules;

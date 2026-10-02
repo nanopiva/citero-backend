@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -14,6 +15,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -270,6 +273,61 @@ public class GlobalExceptionHandler {
         );
 
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(error);
+    }
+
+    /**
+     * Atrapa NoResourceFoundException → HTTP 404.
+     * Se lanza cuando un path permitido por seguridad no tiene handler ni recurso
+     * (p. ej. /swagger-ui deshabilitado, /v3/api-docs, o /api/auth/** inexistente).
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handleNoResourceFound(
+            NoResourceFoundException ex,
+            HttpServletRequest request) {
+
+        ErrorResponseDto error = buildError(
+                HttpStatus.NOT_FOUND,
+                "Recurso no encontrado.",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+
+    /**
+     * Atrapa NoHandlerFoundException → HTTP 404 (cuando se configura
+     * {@code throw-exception-if-no-handler-found}).
+     */
+    @ExceptionHandler(NoHandlerFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handleNoHandlerFound(
+            NoHandlerFoundException ex,
+            HttpServletRequest request) {
+
+        ErrorResponseDto error = buildError(
+                HttpStatus.NOT_FOUND,
+                "Recurso no encontrado.",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+
+    /**
+     * Atrapa HttpRequestMethodNotSupportedException → HTTP 405.
+     * Se lanza cuando la ruta existe pero no admite el método HTTP usado.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponseDto> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex,
+            HttpServletRequest request) {
+
+        ErrorResponseDto error = buildError(
+                HttpStatus.METHOD_NOT_ALLOWED,
+                "Método HTTP no permitido para este recurso.",
+                request.getRequestURI()
+        );
+
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(error);
     }
 
     /**

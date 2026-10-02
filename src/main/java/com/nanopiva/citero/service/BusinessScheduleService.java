@@ -15,6 +15,8 @@ import com.nanopiva.citero.exception.ForbiddenException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.BusinessScheduleDayRepository;
+import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.repository.UserRepository;
 import com.nanopiva.citero.util.BusinessTime;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,11 +35,17 @@ public class BusinessScheduleService {
 
     private final BusinessScheduleDayRepository scheduleDayRepository;
     private final BusinessRepository businessRepository;
+    private final UserRepository userRepository;
+    private final StaffRepository staffRepository;
 
     public BusinessScheduleService(BusinessScheduleDayRepository scheduleDayRepository,
-                                   BusinessRepository businessRepository) {
+                                   BusinessRepository businessRepository,
+                                   UserRepository userRepository,
+                                   StaffRepository staffRepository) {
         this.scheduleDayRepository = scheduleDayRepository;
         this.businessRepository = businessRepository;
+        this.userRepository = userRepository;
+        this.staffRepository = staffRepository;
     }
 
     /** Una franja horaria [open, close). */
@@ -53,8 +61,9 @@ public class BusinessScheduleService {
     // ---------------------------------------------------------------------
 
     @Transactional(readOnly = true)
-    public List<BusinessScheduleResponseDto> getWeeklySchedule(Long businessId) {
+    public List<BusinessScheduleResponseDto> getWeeklySchedule(Long businessId, Long viewerId) {
         Business business = getBusiness(businessId);
+        assertCanView(business, viewerId);
         return scheduleDayRepository.findByBusinessAndDayOfWeekIsNotNull(business).stream()
                 .sorted(Comparator.comparing(day -> day.getDayOfWeek().ordinal()))
                 .map(this::toWeeklyResponse)
@@ -110,8 +119,9 @@ public class BusinessScheduleService {
     // ---------------------------------------------------------------------
 
     @Transactional(readOnly = true)
-    public List<ScheduleExceptionResponseDto> getExceptions(Long businessId) {
+    public List<ScheduleExceptionResponseDto> getExceptions(Long businessId, Long viewerId) {
         Business business = getBusiness(businessId);
+        assertCanView(business, viewerId);
         return scheduleDayRepository.findByBusinessAndSpecificDateIsNotNullOrderBySpecificDateAsc(business).stream()
                 .map(this::toExceptionResponse)
                 .toList();
@@ -157,8 +167,9 @@ public class BusinessScheduleService {
     // ---------------------------------------------------------------------
 
     @Transactional(readOnly = true)
-    public EffectiveScheduleResponseDto getEffectiveSchedule(Long businessId, LocalDate date) {
+    public EffectiveScheduleResponseDto getEffectiveSchedule(Long businessId, LocalDate date, Long viewerId) {
         Business business = getBusiness(businessId);
+        assertCanView(business, viewerId);
         EffectiveSchedule effective = resolveEffective(business, date);
         return EffectiveScheduleResponseDto.builder()
                 .date(date)
@@ -214,6 +225,22 @@ public class BusinessScheduleService {
             throw new ForbiddenException("No tienes permiso para modificar este negocio.");
         }
         return business;
+    }
+
+    /** El horario de un negocio solo lo consultan su dueño o su equipo. */
+    private void assertCanView(Business business, Long viewerId) {
+        if (viewerId == null) {
+            throw new ForbiddenException("No tienes permiso para ver los horarios de este negocio.");
+        }
+        if (business.getOwner().getId().equals(viewerId)) {
+            return;
+        }
+        boolean isStaff = userRepository.findById(viewerId)
+                .flatMap(user -> staffRepository.findByUserAndBusiness(user, business))
+                .isPresent();
+        if (!isStaff) {
+            throw new ForbiddenException("No tienes permiso para ver los horarios de este negocio.");
+        }
     }
 
     /**

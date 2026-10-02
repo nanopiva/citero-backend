@@ -167,18 +167,19 @@ public class AvailabilityService {
             throw new BadRequestException("El negocio no atiende ese día.");
         }
 
-        LocalTime slotTime = startTime.toLocalTime();
-        LocalTime slotEndTime = startTime.plusMinutes(service.getDurationMinutes()).toLocalTime();
+        LocalDateTime slotStart = startTime;
+        LocalDateTime slotEnd = startTime.plusMinutes(service.getDurationMinutes());
 
         // El turno debe entrar completo dentro de una misma franja (no puede cruzar un hueco).
         BusinessScheduleService.TimeRange range = effective.ranges().stream()
-                .filter(r -> !slotTime.isBefore(r.open()) && !slotEndTime.isAfter(r.close()))
+                .filter(r -> !slotStart.isBefore(LocalDateTime.of(date, r.open()))
+                        && !slotEnd.isAfter(LocalDateTime.of(date, r.close())))
                 .findFirst()
                 .orElseThrow(() -> new BadRequestException(
                         "El horario seleccionado está fuera del horario de atención."));
 
         // La grilla de turnos arranca en la apertura de la franja y avanza cada 15 minutos.
-        long minutesFromOpen = java.time.Duration.between(range.open(), slotTime).toMinutes();
+        long minutesFromOpen = java.time.Duration.between(range.open(), slotStart.toLocalTime()).toMinutes();
         if (minutesFromOpen % 15 != 0) {
             throw new BadRequestException("El horario debe estar alineado a la grilla de 15 minutos.");
         }
@@ -285,10 +286,10 @@ public class AvailabilityService {
         // Se recorre cada franja por separado: la grilla arranca en la apertura de cada
         // franja y nunca se ofrecen turnos en los huecos entre franjas.
         for (BusinessScheduleService.TimeRange range : effective.ranges()) {
-            LocalTime currentSlot = range.open();
-            while (!currentSlot.plusMinutes(durationMinutes).isAfter(range.close())) {
-                LocalDateTime slotStart = LocalDateTime.of(date, currentSlot);
-
+            LocalDateTime rangeClose = LocalDateTime.of(date, range.close());
+            LocalDateTime currentSlot = LocalDateTime.of(date, range.open());
+            while (!currentSlot.plusMinutes(durationMinutes).isAfter(rangeClose)) {
+                LocalDateTime slotStart = currentSlot;
                 // No ofrecer horarios que ya pasaron (ni el que empieza justo ahora).
                 if (slotStart.isAfter(now)) {
                     LocalDateTime slotEnd = slotStart.plusMinutes(durationMinutes);
@@ -298,7 +299,7 @@ public class AvailabilityService {
                                     confirmedByStaff.getOrDefault(staff.getId(), List.of()), slotStart, slotEnd));
 
                     if (isAvailable) {
-                        availableSlots.add(currentSlot);
+                        availableSlots.add(slotStart.toLocalTime());
                     }
                 }
 

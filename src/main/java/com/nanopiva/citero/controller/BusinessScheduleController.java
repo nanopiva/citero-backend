@@ -24,8 +24,10 @@ public class BusinessScheduleController {
     private final BusinessScheduleService businessScheduleService;
 
     @GetMapping
-    public ResponseEntity<List<BusinessScheduleResponseDto>> getSchedule(@PathVariable Long businessId) {
-        return ResponseEntity.ok(businessScheduleService.getWeeklySchedule(businessId));
+    public ResponseEntity<List<BusinessScheduleResponseDto>> getSchedule(
+            @PathVariable Long businessId,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        return ResponseEntity.ok(businessScheduleService.getWeeklySchedule(businessId, userDetails.getId()));
     }
 
     @PutMapping
@@ -39,7 +41,8 @@ public class BusinessScheduleController {
     @GetMapping("/effective")
     public ResponseEntity<EffectiveScheduleResponseDto> getEffectiveSchedule(
             @PathVariable Long businessId,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ResponseEntity.ok(businessScheduleService.getEffectiveSchedule(businessId, date));
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        return ResponseEntity.ok(businessScheduleService.getEffectiveSchedule(businessId, date, userDetails.getId()));
     }
 }

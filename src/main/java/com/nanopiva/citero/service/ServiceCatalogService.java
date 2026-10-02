@@ -5,6 +5,7 @@ import com.nanopiva.citero.dto.business.ServiceResponseDto;
 import com.nanopiva.citero.dto.business.ServiceUpdateDto;
 import com.nanopiva.citero.entity.Business;
 import com.nanopiva.citero.entity.Service;
+import com.nanopiva.citero.entity.Staff;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.ConflictException;
 import com.nanopiva.citero.exception.ForbiddenException;
@@ -12,6 +13,7 @@ import com.nanopiva.citero.exception.ResourceNotFoundException;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
+import com.nanopiva.citero.repository.StaffRepository;
 
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,13 +25,16 @@ public class ServiceCatalogService {
     private final ServiceRepository serviceRepository;
     private final BusinessRepository businessRepository;
     private final AppointmentRepository appointmentRepository;
+    private final StaffRepository staffRepository;
 
     public ServiceCatalogService(ServiceRepository serviceRepository,
                                  BusinessRepository businessRepository,
-                                 AppointmentRepository appointmentRepository) {
+                                 AppointmentRepository appointmentRepository,
+                                 StaffRepository staffRepository) {
         this.serviceRepository = serviceRepository;
         this.businessRepository = businessRepository;
         this.appointmentRepository = appointmentRepository;
+        this.staffRepository = staffRepository;
     }
 
     /**
@@ -109,6 +114,14 @@ public class ServiceCatalogService {
 
         if (appointmentRepository.existsByService(service)) {
             throw new ConflictException("No se puede eliminar un servicio con turnos asociados.");
+        }
+
+        // Quita el servicio de los empleados que lo tengan (evita violar la FK de staff_services).
+        List<Staff> staffList = staffRepository.findByBusiness(service.getBusiness());
+        for (Staff staff : staffList) {
+            if (staff.getServices().remove(service)) {
+                staffRepository.save(staff);
+            }
         }
 
         serviceRepository.delete(service);

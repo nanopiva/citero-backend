@@ -179,7 +179,7 @@ class BusinessScheduleServiceTest extends IntegrationTest {
                 .scheduleDay(day).openTime(LocalTime.of(10, 0)).closeTime(LocalTime.of(14, 0)).build());
         scheduleDayRepository.save(day);
 
-        List<BusinessScheduleResponseDto> result = scheduleService.getWeeklySchedule(business.getId());
+        List<BusinessScheduleResponseDto> result = scheduleService.getWeeklySchedule(business.getId(), owner.getId());
 
         assertEquals(1, result.size());
         assertEquals("SATURDAY", result.get(0).getDayOfWeek());
@@ -204,7 +204,7 @@ class BusinessScheduleServiceTest extends IntegrationTest {
         assertEquals(date, updated.getDate());
         assertEquals(1, updated.getPeriods().size(), "Reemplaza la excepción de esa fecha");
         assertEquals(LocalTime.of(8, 0), updated.getPeriods().get(0).getOpenTime());
-        assertEquals(1, scheduleService.getExceptions(business.getId()).size());
+        assertEquals(1, scheduleService.getExceptions(business.getId(), owner.getId()).size());
     }
 
     @Test
@@ -217,7 +217,7 @@ class BusinessScheduleServiceTest extends IntegrationTest {
 
         scheduleService.deleteException(business.getId(), owner.getId(), date);
 
-        assertTrue(scheduleService.getExceptions(business.getId()).isEmpty());
+        assertTrue(scheduleService.getExceptions(business.getId(), owner.getId()).isEmpty());
     }
 
     @Test
@@ -241,12 +241,12 @@ class BusinessScheduleServiceTest extends IntegrationTest {
         scheduleService.upsertException(business.getId(), owner.getId(),
                 exception(date, false, LocalTime.of(10, 0), LocalTime.of(14, 0)));
 
-        EffectiveScheduleResponseDto onDate = scheduleService.getEffectiveSchedule(business.getId(), date);
+        EffectiveScheduleResponseDto onDate = scheduleService.getEffectiveSchedule(business.getId(), date, owner.getId());
         assertEquals(1, onDate.getPeriods().size());
         assertEquals(LocalTime.of(10, 0), onDate.getPeriods().get(0).getOpenTime(),
                 "La excepción gana sobre la regla semanal");
 
-        EffectiveScheduleResponseDto nextWeek = scheduleService.getEffectiveSchedule(business.getId(), date.plusWeeks(1));
+        EffectiveScheduleResponseDto nextWeek = scheduleService.getEffectiveSchedule(business.getId(), date.plusWeeks(1), owner.getId());
         assertEquals(LocalTime.of(9, 0), nextWeek.getPeriods().get(0).getOpenTime(),
                 "Sin excepción, aplica la regla semanal");
     }

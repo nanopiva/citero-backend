@@ -16,6 +16,9 @@ public class WorkspaceResponseDto {
     private String slug;
     private String logoUrl;
 
+    // Zona horaria del negocio (IANA), usada por el front para comparar fechas/horas.
+    private String timezone;
+
     // Este rol es CONTEXTUAL al negocio (Devolverá "OWNER" o "STAFF")
     private String role;
 }

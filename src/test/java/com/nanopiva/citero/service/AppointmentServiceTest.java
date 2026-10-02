@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -36,6 +37,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -352,6 +354,24 @@ class AppointmentServiceTest extends IntegrationTest {
 
         assertThrows(ResourceNotFoundException.class, () ->
                 appointmentService.sendCancellationOtp(appointment.getId(), null, null, client.getEmail()));
+    }
+
+    /** Sin sesión externa (OSIV off): el servicio debe abrir su propia transacción para el acceso LAZY. */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void enviarOtpDeCancelacionConTokenValidoFuncionaSinOsiv() {
+        Business business = newBusiness("otp-token", 24);
+        com.nanopiva.citero.entity.Service service = newService(business);
+        Staff staff = newStaff(business, service);
+        User client = newUser("client-otp-token");
+        Appointment appointment = newAppointment(client, staff, service, futureSlot(1, 10),
+                Appointment.AppointmentStatus.CONFIRMED);
+
+        String token = publicLinkTokenService.generate(
+                appointment.getId(), appointment.getStartTime(), business.getTimezone());
+
+        assertDoesNotThrow(() -> appointmentService.sendCancellationOtp(
+                appointment.getId(), token, null, client.getEmail()));
     }
 
     @Test

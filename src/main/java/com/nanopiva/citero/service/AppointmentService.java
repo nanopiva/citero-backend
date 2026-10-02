@@ -109,7 +109,7 @@ public class AppointmentService {
                 .orElseThrow(() -> new ResourceNotFoundException("Servicio no encontrado."));
 
         Business business = service.getBusiness();
-        BusinessConfig config = business.getConfig();
+        BusinessConfig config = requireConfig(business);
 
         // Resolver el profesional: el elegido por el cliente o uno libre ("Cualquier profesional").
         Staff staff;
@@ -132,7 +132,7 @@ public class AppointmentService {
             staff = availabilityService.assignAvailableStaff(business, service, dto.getStartTime());
         }
 
-        User client = resolveClient(authenticatedUserId, dto, config);
+        User client = resolveClient(authenticatedUserId, dto, business, config);
 
         if (reputationService.isClientBlocked(client.getId(), business.getId())) {
             throw new BadRequestException("No puedes reservar en este negocio debido a ausencias o cancelaciones previas.");
@@ -181,7 +181,7 @@ public class AppointmentService {
             throw new ForbiddenException("No tienes permiso para cancelar este turno.");
         }
         validateCancellable(appointment);
-        BusinessConfig config = appointment.getStaff().getBusiness().getConfig();
+        BusinessConfig config = requireConfig(appointment.getStaff().getBusiness());
         long hoursUntilStart = Duration.between(
                 BusinessTime.now(appointment.getStaff().getBusiness()), appointment.getStartTime()).toHours();
         if (hoursUntilStart < config.getCancellationToleranceHours()) {
@@ -278,6 +278,7 @@ public class AppointmentService {
         return PublicAppointmentResponseDto.builder()
                 .id(appointment.getId())
                 .businessName(business.getName())
+                .businessTimezone(business.getTimezone())
                 .serviceName(appointment.getService().getName())
                 .staffName(staffDisplayName)
                 .startTime(appointment.getStartTime())
@@ -293,7 +294,9 @@ public class AppointmentService {
      * Exige el token del link público (o ser el cliente autenticado) y que el email
      * coincida con el cliente del turno, para no permitir email-bombing a terceros.
      */
+    @Transactional
     public void sendCancellationOtp(Long appointmentId, String token, Long viewerUserId, String email) {
+        // Accede a asociaciones LAZY del turno (client, staff.business).
         Appointment appointment = appointmentRepository.findById(appointmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
 
@@ -342,7 +345,7 @@ public class AppointmentService {
         otpService.verifyOtp(email, otpCode, OtpService.PURPOSE_CANCELLATION_VERIFICATION);
 
         // Aplicar strike si la cancelación es tardía (misma lógica que cancelByClient)
-        BusinessConfig config = appointment.getStaff().getBusiness().getConfig();
+        BusinessConfig config = requireConfig(appointment.getStaff().getBusiness());
         long hoursUntilStart = Duration.between(
                 BusinessTime.now(appointment.getStaff().getBusiness()), appointment.getStartTime()).toHours();
         if (hoursUntilStart < config.getCancellationToleranceHours()) {
@@ -431,18 +434,28 @@ public class AppointmentService {
         }
     }
 
-    private User resolveClient(Long authenticatedUserId, AppointmentCreateRequestDto dto, BusinessConfig config) {
+    private User resolveClient(Long authenticatedUserId, AppointmentCreateRequestDto dto,
+                               Business business, BusinessConfig config) {
+        boolean hasGuestEmail = dto.getGuestEmail() != null && !dto.getGuestEmail().isBlank();
+
         if (authenticatedUserId != null) {
+            // El dueño o el staff pueden dar de alta un turno para un cliente (email indicado).
+            boolean isTeam = business.getOwner().getId().equals(authenticatedUserId)
+                    || isStaffOf(authenticatedUserId, business);
+            if (hasGuestEmail && isTeam) {
+                return userService.findOrCreateGuestUser(dto.getGuestEmail(), dto.getGuestPhone());
+            }
             return userService.getUserEntityById(authenticatedUserId);
         }
+
         if (config.getReservationMode() == BusinessConfig.ReservationMode.PUBLIC) {
-            if (dto.getGuestEmail() == null || dto.getGuestEmail().isBlank()) {
+            if (!hasGuestEmail) {
                 throw new BadRequestException("El email es obligatorio para reservar como invitado.");
             }
             return userService.findOrCreateGuestUser(dto.getGuestEmail(), dto.getGuestPhone());
         }
         if (config.getReservationMode() == BusinessConfig.ReservationMode.AUTHENTICATED) {
-            if (dto.getGuestEmail() == null || dto.getGuestEmail().isBlank()) {
+            if (!hasGuestEmail) {
                 throw new BadRequestException("El email es obligatorio para verificar tu identidad.");
             }
             if (dto.getOtpCode() == null || dto.getOtpCode().isBlank()) {
@@ -476,10 +489,21 @@ public class AppointmentService {
         return ALLOWED_TRANSITIONS.getOrDefault(from, Set.of()).contains(to);
     }
 
+    /** Config del negocio; falla si no está inicializada. */
+    private BusinessConfig requireConfig(Business business) {
+        BusinessConfig config = business.getConfig();
+        if (config == null) {
+            throw new ResourceNotFoundException(
+                    "La configuración del negocio no está disponible.");
+        }
+        return config;
+    }
+
     private AppointmentResponseDto mapToResponseDto(Appointment appointment) {
         return AppointmentResponseDto.builder()
                 .id(appointment.getId())
                 .businessName(appointment.getService().getBusiness().getName())
+                .businessTimezone(appointment.getService().getBusiness().getTimezone())
                 .client(mapUserToDto(appointment.getClient()))
                 .staff(mapStaffToDto(appointment.getStaff()))
                 .service(mapServiceToDto(appointment.getService()))
@@ -503,7 +527,7 @@ public class AppointmentService {
         // No se expone el email del staff (el DTO de turno se devuelve en el POST público de reserva).
         return StaffResponseDto.builder()
                 .id(staff.getId())
-                .customName(staff.getCustomName())
+                .customName(StaffUtils.displayName(staff))
                 .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
                 .build();
     }

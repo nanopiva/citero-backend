@@ -5,6 +5,7 @@ import com.nanopiva.citero.entity.User;
 import com.nanopiva.citero.repository.RefreshTokenRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.hibernate.Hibernate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -66,7 +67,9 @@ public class RefreshTokenService {
      */
     @Transactional
     public Optional<RefreshTokenPair> rotate(String rawToken, String userAgent, String ipAddress) {
-        Optional<RefreshToken> found = refreshTokenRepository.findByTokenHash(hash(rawToken));
+        // Lock pesimista: serializa rotaciones concurrentes del mismo token, de modo
+        // que el segundo en llegar vea el token ya revocado y detecte el reuso.
+        Optional<RefreshToken> found = refreshTokenRepository.findByTokenHashForUpdate(hash(rawToken));
         if (found.isEmpty()) {
             return Optional.empty();
         }
@@ -86,7 +89,10 @@ public class RefreshTokenService {
             return Optional.empty();
         }
 
-        RefreshTokenPair pair = issueInSession(existing.getUser(), existing.getSessionId(), userAgent, ipAddress);
+        // El usuario se usa fuera de la transacción (AuthService.refresh): inicializamos el proxy.
+        User user = existing.getUser();
+        Hibernate.initialize(user);
+        RefreshTokenPair pair = issueInSession(user, existing.getSessionId(), userAgent, ipAddress);
         existing.setRevoked(true);
         existing.setReplacedByHash(hash(pair.rawToken()));
         refreshTokenRepository.save(existing);

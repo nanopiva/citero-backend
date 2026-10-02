@@ -85,14 +85,14 @@ class AuthControllerTest extends IntegrationTest {
     }
 
     @Test
-    void loginConCredencialesInvalidasDevuelve400() throws Exception {
+    void loginConCredencialesInvalidasDevuelve401() throws Exception {
         String email = uniqueEmail("badlogin");
         register(email);
 
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"email\":\"" + email + "\",\"password\":\"incorrecta\"}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

@@ -106,18 +106,18 @@ class AuthServiceTest extends IntegrationTest {
     }
 
     @Test
-    void loginConContrasenaIncorrectaLanzaBadRequest() {
+    void loginConContrasenaIncorrectaLanzaUnauthorized() {
         String email = uniqueEmail("login-bad");
         createUser(email, "secret123");
 
-        assertThrows(BadRequestException.class, () -> authService.login(
+        assertThrows(UnauthorizedException.class, () -> authService.login(
                 LoginRequestDto.builder().email(email).password("incorrecta").build(),
                 "JUnit", "127.0.0.1"));
     }
 
     @Test
-    void loginConEmailInexistenteLanzaBadRequest() {
-        assertThrows(BadRequestException.class, () -> authService.login(
+    void loginConEmailInexistenteLanzaUnauthorized() {
+        assertThrows(UnauthorizedException.class, () -> authService.login(
                 LoginRequestDto.builder().email(uniqueEmail("login-unknown")).password("secret123").build(),
                 "JUnit", "127.0.0.1"));
     }

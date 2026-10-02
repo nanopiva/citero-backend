@@ -22,8 +22,10 @@ public class BusinessScheduleExceptionController {
     private final BusinessScheduleService businessScheduleService;
 
     @GetMapping
-    public ResponseEntity<List<ScheduleExceptionResponseDto>> getExceptions(@PathVariable Long businessId) {
-        return ResponseEntity.ok(businessScheduleService.getExceptions(businessId));
+    public ResponseEntity<List<ScheduleExceptionResponseDto>> getExceptions(
+            @PathVariable Long businessId,
+            @AuthenticationPrincipal UserDetailsImpl userDetails) {
+        return ResponseEntity.ok(businessScheduleService.getExceptions(businessId, userDetails.getId()));
     }
 
     @PutMapping

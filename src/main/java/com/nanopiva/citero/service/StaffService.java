@@ -16,6 +16,7 @@ import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ServiceRepository;
 import com.nanopiva.citero.repository.StaffRepository;
 import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.util.Emails;
 import com.nanopiva.citero.util.StaffUtils;
 
 import org.springframework.transaction.annotation.Transactional;
@@ -59,11 +60,14 @@ public class StaffService {
             throw new ForbiddenException("No tienes permiso para agregar empleados a este negocio.");
         }
 
+        // Email normalizado para evitar duplicados por mayúsculas/espacios.
+        String email = Emails.normalize(requestDto.getEmail());
+
         Staff staff = new Staff();
         staff.setBusiness(business);
         staff.setCustomName(requestDto.getCustomName());
 
-        Optional<User> existingUser = userRepository.findByEmail(requestDto.getEmail());
+        Optional<User> existingUser = userRepository.findByEmail(email);
         boolean isRegistered = existingUser.isPresent();
         // El dueño que se agrega a sí mismo no necesita invitación ni confirmación:
         // ya es miembro del negocio y su cuenta está activa.
@@ -76,10 +80,10 @@ public class StaffService {
             }
             staff.setUser(existingUser.get());
         } else {
-            if (staffRepository.existsByContactEmailAndBusiness(requestDto.getEmail(), business)) {
+            if (staffRepository.existsByContactEmailAndBusiness(email, business)) {
                 throw new DuplicateResourceException("Ya existe un perfil pendiente con este correo en el local.");
             }
-            staff.setContactEmail(requestDto.getEmail());
+            staff.setContactEmail(email);
         }
 
         if (requestDto.getServiceIds() != null && !requestDto.getServiceIds().isEmpty()) {
@@ -93,7 +97,7 @@ public class StaffService {
         // Se omite si el dueño se agrega a sí mismo: no hay nada que invitar ni confirmar.
         if (!isOwnerSelf) {
             staffNotificationService.sendStaffInvitation(
-                    requestDto.getEmail(),
+                    email,
                     requestDto.getCustomName(),
                     business.getName(),
                     isRegistered
@@ -241,6 +245,9 @@ public class StaffService {
     }
 
     private Set<Service> getServicesByIds(Business business, Set<Long> serviceIds) {
+        if (serviceIds == null) {
+            throw new BadRequestException("La lista de servicios es obligatoria.");
+        }
         return serviceRepository.findAllById(serviceIds).stream()
                 .peek(service -> {
                     if (!service.getBusiness().getId().equals(business.getId())) {
@@ -267,7 +274,7 @@ public class StaffService {
     private StaffResponseDto mapToResponseDto(Staff staff, boolean includeEmail) {
         return StaffResponseDto.builder()
                 .id(staff.getId())
-                .customName(staff.getCustomName())
+                .customName(StaffUtils.displayName(staff))
                 .userEmail(includeEmail ? StaffUtils.email(staff) : null)
                 .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
                 .services(mapServicesToDto(staff.getServices()))

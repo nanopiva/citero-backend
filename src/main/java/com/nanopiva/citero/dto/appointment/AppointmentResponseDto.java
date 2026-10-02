@@ -18,6 +18,8 @@ public class AppointmentResponseDto {
 
     private Long id;
     private String businessName;
+    // Zona horaria del negocio (IANA): startTime/endTime son hora local de esa zona.
+    private String businessTimezone;
     private UserResponseDto client;
     private StaffResponseDto staff;
     private ServiceResponseDto service;

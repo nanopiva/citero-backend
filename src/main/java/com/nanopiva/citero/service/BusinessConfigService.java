@@ -75,6 +75,9 @@ public class BusinessConfigService {
         config.setCancellationToleranceHours(requestDto.getCancellationToleranceHours());
         config.setEnablePenalties(requestDto.getEnablePenalties());
         config.setMaxStrikes(requestDto.getMaxStrikes());
+        if (!requestDto.getDefaultOpeningTime().isBefore(requestDto.getDefaultClosingTime())) {
+            throw new BadRequestException("La hora de apertura debe ser anterior a la de cierre.");
+        }
         config.setDefaultOpeningTime(requestDto.getDefaultOpeningTime());
         config.setDefaultClosingTime(requestDto.getDefaultClosingTime());
 

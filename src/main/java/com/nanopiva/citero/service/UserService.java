@@ -11,6 +11,7 @@ import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.exception.DuplicateResourceException;
 import com.nanopiva.citero.exception.ResourceNotFoundException;
 import com.nanopiva.citero.security.CommonPasswordCheck;
+import com.nanopiva.citero.util.Emails;
 import com.nanopiva.citero.repository.AppointmentRepository;
 import com.nanopiva.citero.repository.BusinessRepository;
 import com.nanopiva.citero.repository.ClientReputationRepository;
@@ -59,7 +60,8 @@ public class UserService {
 
     @Transactional
     public UserResponseDto register(RegisterRequestDto requestDto) {
-        Optional<User> existing = userRepository.findByEmail(requestDto.getEmail());
+        String email = Emails.normalize(requestDto.getEmail());
+        Optional<User> existing = userRepository.findByEmail(email);
 
         User user;
         if (existing.isPresent()) {
@@ -74,7 +76,7 @@ public class UserService {
             user.setIsGuest(false);
         } else {
             user = new User();
-            user.setEmail(requestDto.getEmail());
+            user.setEmail(email);
         }
 
         if (CommonPasswordCheck.isCommon(requestDto.getPassword())) {
@@ -149,7 +151,9 @@ public class UserService {
         }
 
         if (updateDto.getPhone() != null) {
-            user.setPhone(updateDto.getPhone());
+            String phone = updateDto.getPhone().trim();
+            // Un string vacío borra el teléfono; null significa "no tocar".
+            user.setPhone(phone.isEmpty() ? null : phone);
         }
 
         User updatedUser = userRepository.save(user);
@@ -202,10 +206,11 @@ public class UserService {
 
     @Transactional
     public User findOrCreateGuestUser(String email, String phone) {
-        return userRepository.findByEmail(email)
+        String normalizedEmail = Emails.normalize(email);
+        return userRepository.findByEmail(normalizedEmail)
                 .orElseGet(() -> {
                     User guest = new User();
-                    guest.setEmail(email);
+                    guest.setEmail(normalizedEmail);
                     guest.setPhone(phone);
                     guest.setPassword(passwordEncoder.encode("guest_" + System.currentTimeMillis()));
                     guest.setIsGuest(true);
@@ -230,6 +235,7 @@ public class UserService {
                     .businessName(business.getName())
                     .slug(business.getSlug())
                     .logoUrl(business.getLogoUrl())
+                    .timezone(business.getTimezone())
                     .role("OWNER")
                     .build());
         });
@@ -240,6 +246,7 @@ public class UserService {
                     .businessName(staff.getBusiness().getName())
                     .slug(staff.getBusiness().getSlug())
                     .logoUrl(staff.getBusiness().getLogoUrl())
+                    .timezone(staff.getBusiness().getTimezone())
                     .role("STAFF")
                     .build());
         });

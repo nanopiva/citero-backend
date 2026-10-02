@@ -6,11 +6,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.LocalDate;
 
@@ -18,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -104,6 +108,34 @@ class GlobalExceptionHandlerTest extends IntegrationTest {
                         new MaxUploadSizeExceededException(10L), requestTo("/api/businesses/1/logo")),
                 413, "Payload Too Large",
                 "El archivo supera el tamaño máximo permitido.", "/api/businesses/1/logo");
+    }
+
+    @Test
+    void noResourceFoundMapsTo404() {
+        assertError(
+                handler.handleNoResourceFound(
+                        new NoResourceFoundException(
+                                HttpMethod.GET, "/swagger-ui/index.html", "No static resource"),
+                        requestTo("/swagger-ui/index.html")),
+                404, "Not Found", "Recurso no encontrado.", "/swagger-ui/index.html");
+    }
+
+    @Test
+    void methodNotSupportedMapsTo405() {
+        assertError(
+                handler.handleMethodNotSupported(
+                        new HttpRequestMethodNotSupportedException("TRACE"),
+                        requestTo("/api/auth/login")),
+                405, "Method Not Allowed", "Método HTTP no permitido para este recurso.",
+                "/api/auth/login");
+    }
+
+    @Test
+    void unknownPermittedPathReturns404InsteadOf500() throws Exception {
+        mockMvc.perform(get("/api/auth/does-not-exist"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Recurso no encontrado."));
     }
 
     @Test

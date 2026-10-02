@@ -20,6 +20,8 @@ import java.time.LocalDateTime;
 public class PublicAppointmentResponseDto {
     private Long id;
     private String businessName;
+    // Zona horaria del negocio (IANA): startTime/endTime son hora local de esa zona.
+    private String businessTimezone;
     private String serviceName;
     private String staffName;
     private LocalDateTime startTime;

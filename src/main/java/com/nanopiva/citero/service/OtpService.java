@@ -4,6 +4,7 @@ import com.nanopiva.citero.entity.OtpToken;
 import com.nanopiva.citero.exception.BadRequestException;
 import com.nanopiva.citero.repository.OtpTokenRepository;
 import com.nanopiva.citero.security.RateLimitStore;
+import com.nanopiva.citero.util.Emails;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,28 +42,30 @@ public class OtpService {
         this.rateLimitStore = rateLimitStore;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = BadRequestException.class)
     public void generateAndSendOtp(String target, String purpose) {
         generateAndSendOtp(target, purpose, true);
     }
 
     /** Crea el OTP y, si {@code send}, lo envía. El flag permite no enviar sin cambiar el trabajo. */
-    @Transactional
+    @Transactional(noRollbackFor = BadRequestException.class)
     public void generateAndSendOtp(String target, String purpose, boolean send) {
+        String normalizedTarget = Emails.normalize(target);
+
         // Cap por destinatario (anti email-bombing), además del límite por IP.
         if (!rateLimitStore.tryConsume(
-                "otp-target:" + target, MAX_OTPS_PER_TARGET, OTP_TARGET_WINDOW)) {
+                "otp-target:" + normalizedTarget, MAX_OTPS_PER_TARGET, OTP_TARGET_WINDOW)) {
             throw new BadRequestException(
                     "Pediste demasiados códigos. Esperá unos minutos e intentá de nuevo.");
         }
 
         // Solo el último código emitido debe ser válido: invalidamos los anteriores del mismo propósito.
-        otpTokenRepository.markActiveAsUsed(target, purpose);
+        otpTokenRepository.markActiveAsUsed(normalizedTarget, purpose);
 
         String code = generateCode();
 
         OtpToken token = OtpToken.builder()
-                .target(target)
+                .target(normalizedTarget)
                 .code(code)
                 .purpose(purpose)
                 .expirationTime(LocalDateTime.now().plusMinutes(EXPIRATION_MINUTES))
@@ -90,10 +93,10 @@ public class OtpService {
                 subject = "Tu código de verificación de Citero";
             }
 
-            emailService.sendEmail(target, subject, templateName, variables);
+            emailService.sendEmail(normalizedTarget, subject, templateName, variables);
         }
 
-        log.info("OTP generado para {} con propósito {}", target, purpose);
+        log.info("OTP generado para {} con propósito {}", normalizedTarget, purpose);
     }
 
     /** Housekeeping diario de OTPs vencidos. */
@@ -105,8 +108,9 @@ public class OtpService {
 
     @Transactional(noRollbackFor = BadRequestException.class)
     public void verifyOtp(String target, String code, String purpose) {
+        String normalizedTarget = Emails.normalize(target);
         OtpToken token = otpTokenRepository
-                .findFirstByTargetAndPurposeAndIsUsedFalseOrderByCreatedAtDesc(target, purpose)
+                .findFirstByTargetAndPurposeAndIsUsedFalseOrderByCreatedAtDesc(normalizedTarget, purpose)
                 .orElseThrow(() -> new BadRequestException("El código es inválido o ya ha sido utilizado."));
 
         if (token.getExpirationTime().isBefore(LocalDateTime.now())) {
@@ -117,7 +121,7 @@ public class OtpService {
             int attempts = (token.getAttempts() == null ? 0 : token.getAttempts()) + 1;
             token.setAttempts(attempts);
             if (attempts >= MAX_ATTEMPTS) {
-                otpTokenRepository.markActiveAsUsed(target, purpose);
+                otpTokenRepository.markActiveAsUsed(normalizedTarget, purpose);
                 throw new BadRequestException("Demasiados intentos fallidos. Solicitá un código nuevo.");
             }
             otpTokenRepository.save(token);
