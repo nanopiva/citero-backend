@@ -1,0 +1,318 @@
+package com.nanopiva.citero.service;
+
+import com.nanopiva.citero.dto.user.LoginRequestDto;
+import com.nanopiva.citero.dto.user.RegisterRequestDto;
+import com.nanopiva.citero.entity.Business;
+import com.nanopiva.citero.entity.Staff;
+import com.nanopiva.citero.entity.User;
+import com.nanopiva.citero.exception.BadRequestException;
+import com.nanopiva.citero.exception.TooManyRequestsException;
+import com.nanopiva.citero.exception.UnauthorizedException;
+import com.nanopiva.citero.repository.BusinessRepository;
+import com.nanopiva.citero.repository.OtpTokenRepository;
+import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.security.TotpService;
+import com.nanopiva.citero.support.IntegrationTest;
+import com.nanopiva.citero.support.OtpTestCodes;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@Transactional
+class AuthServiceTest extends IntegrationTest {
+
+    @Autowired private AuthService authService;
+    @Autowired private UserRepository userRepository;
+    @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private RefreshTokenService refreshTokenService;
+    @Autowired private OtpTokenRepository otpTokenRepository;
+    @Autowired private BusinessRepository businessRepository;
+    @Autowired private StaffRepository staffRepository;
+    @Autowired private MfaService mfaService;
+    @Autowired private TotpService totpService;
+
+    // Evita llamadas reales a Resend al generar OTPs.
+    @MockitoBean private EmailService emailService;
+
+    private String uniqueEmail(String tag) {
+        return tag + "-" + System.nanoTime() + "@test.com";
+    }
+
+    private User createUser(String email, String rawPassword) {
+        return userRepository.save(User.builder()
+                .email(email)
+                .password(passwordEncoder.encode(rawPassword))
+                .emailVerified(true)
+                .build());
+    }
+
+    private String latestOtpCode(String target) {
+        return OtpTestCodes.latestFor(emailService, target);
+    }
+
+    @Test
+    void loginConCredencialesValidasDevuelveTokensYUsuario() {
+        String email = uniqueEmail("login-ok");
+        createUser(email, "secret123");
+
+        AuthService.LoginResult result = authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1");
+
+        assertNotNull(result.accessToken(), "Debe devolverse un access token");
+        assertFalse(result.accessToken().isBlank(), "El access token no debe estar vacío");
+        assertNotNull(result.refreshToken(), "Debe devolverse un refresh token");
+        assertFalse(result.refreshToken().isBlank(), "El refresh token no debe estar vacío");
+        assertEquals(email, result.user().getEmail(), "El usuario devuelto debe coincidir");
+    }
+
+    @Test
+    void loginVinculaLaInvitacionDeStaffPendiente() {
+        String email = uniqueEmail("login-invite");
+        User user = createUser(email, "secret123");
+        User owner = createUser(uniqueEmail("login-invite-owner"), "secret123");
+        Business business = businessRepository.save(Business.builder()
+                .owner(owner)
+                .name("Barbería Login")
+                .slug("login-" + System.nanoTime())
+                .build());
+        Staff staff = staffRepository.save(Staff.builder()
+                .business(business)
+                .contactEmail(email)
+                .customName("Ana")
+                .build());
+
+        authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1");
+
+        Staff linked = staffRepository.findById(staff.getId()).orElseThrow();
+        assertNotNull(linked.getUser(), "El login debe vincular una invitación pendiente para una cuenta ya existente");
+        assertEquals(user.getId(), linked.getUser().getId());
+        assertNull(linked.getContactEmail(), "El email de contacto se limpia al vincular");
+    }
+
+    @Test
+    void loginConContrasenaIncorrectaLanzaUnauthorized() {
+        String email = uniqueEmail("login-bad");
+        createUser(email, "secret123");
+
+        assertThrows(UnauthorizedException.class, () -> authService.login(
+                LoginRequestDto.builder().email(email).password("incorrecta").build(),
+                "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    void loginConMfaActivoDevuelveDesafioYLoginMfaEmiteTokens() {
+        String email = uniqueEmail("mfa-login");
+        User user = createUser(email, "secret123");
+        String secret = mfaService.beginSetup(user.getId()).getSecret();
+        mfaService.enable(user.getId(), totpService.currentCode(secret));
+
+        AuthService.LoginResult challenge = authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1");
+
+        assertTrue(challenge.mfaRequired(), "Debe pedir el segundo factor");
+        assertNotNull(challenge.mfaToken(), "Debe devolver un token de desafío");
+        assertNull(challenge.accessToken(), "No debe emitir access token todavía");
+
+        assertThrows(UnauthorizedException.class, () -> authService.loginMfa(
+                challenge.mfaToken(), "00000", "JUnit", "127.0.0.1"),
+                "Un código inválido debe rechazarse");
+
+        AuthService.AuthResult tokens = authService.loginMfa(
+                challenge.mfaToken(), totpService.currentCode(secret), "JUnit", "127.0.0.1");
+        assertNotNull(tokens.accessToken(), "Con el segundo factor válido se emiten tokens");
+        assertEquals(email, tokens.user().getEmail());
+    }
+
+    @Test
+    void loginMfaConTokenInvalidoLanzaUnauthorized() {
+        assertThrows(UnauthorizedException.class, () -> authService.loginMfa(
+                "no-es-un-token", "123456", "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    void loginConEmailInexistenteLanzaUnauthorized() {
+        assertThrows(UnauthorizedException.class, () -> authService.login(
+                LoginRequestDto.builder().email(uniqueEmail("login-unknown")).password("secret123").build(),
+                "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    void bloqueaLaCuentaTrasVariosIntentosFallidos() {
+        String email = uniqueEmail("lockout");
+        createUser(email, "secret123");
+
+        for (int i = 0; i < 5; i++) {
+            assertThrows(UnauthorizedException.class, () -> authService.login(
+                    LoginRequestDto.builder().email(email).password("incorrecta").build(),
+                    "JUnit", "127.0.0.1"));
+        }
+
+        assertThrows(TooManyRequestsException.class, () -> authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1"),
+                "La cuenta bloqueada no debe permitir login ni con la contraseña correcta");
+    }
+
+    @Test
+    void elLoginExitosoLimpiaElContadorDeFallos() {
+        String email = uniqueEmail("lockout-reset");
+        createUser(email, "secret123");
+
+        for (int i = 0; i < 4; i++) {
+            assertThrows(UnauthorizedException.class, () -> authService.login(
+                    LoginRequestDto.builder().email(email).password("incorrecta").build(),
+                    "JUnit", "127.0.0.1"));
+        }
+
+        assertDoesNotThrow(() -> authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1"));
+
+        // Si el reset funcionó, estos 2 fallos nuevos no alcanzan el máximo (5).
+        for (int i = 0; i < 2; i++) {
+            assertThrows(UnauthorizedException.class, () -> authService.login(
+                    LoginRequestDto.builder().email(email).password("incorrecta").build(),
+                    "JUnit", "127.0.0.1"));
+        }
+        assertDoesNotThrow(() -> authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(),
+                "JUnit", "127.0.0.1"),
+                "El login exitoso previo debe haber limpiado el contador");
+    }
+
+    @Test
+    void refreshConSesionValidaRotaElToken() {
+        User user = createUser(uniqueEmail("refresh-ok"), "secret123");
+        RefreshTokenService.RefreshTokenPair first = refreshTokenService.issue(user, "JUnit", "127.0.0.1");
+
+        AuthService.AuthResult result = authService.refresh(first.rawToken(), "JUnit", "127.0.0.1");
+
+        assertNotNull(result.accessToken(), "Debe emitirse un nuevo access token");
+        assertEquals(user.getEmail(), result.user().getEmail(), "El usuario debe coincidir");
+        assertNotEquals(first.rawToken(), result.refreshToken(), "El refresh token debe rotar");
+    }
+
+    @Test
+    void refreshSinSesionValidaLanzaUnauthorized() {
+        assertThrows(UnauthorizedException.class,
+                () -> authService.refresh("token-inexistente", "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void logoutRevocaLaSesion() {
+        User user = createUser(uniqueEmail("logout"), "secret123");
+        RefreshTokenService.RefreshTokenPair pair = refreshTokenService.issue(user, "JUnit", "127.0.0.1");
+
+        authService.logout(pair.rawToken());
+
+        assertTrue(refreshTokenService.rotate(pair.rawToken(), "JUnit", "127.0.0.1").isEmpty(),
+                "Tras el logout el refresh token ya no debe poder rotarse");
+    }
+
+    @Test
+    void forgotPasswordEsAntiEnumeracion() {
+        String existing = uniqueEmail("forgot-existing");
+        createUser(existing, "secret123");
+
+        assertDoesNotThrow(() -> authService.requestPasswordReset(existing));
+        assertTrue(otpTokenRepository.findAll().stream().anyMatch(t -> existing.equals(t.getTarget())),
+                "Para un email registrado debe generarse un OTP");
+
+        String unknown = uniqueEmail("forgot-unknown");
+        assertDoesNotThrow(() -> authService.requestPasswordReset(unknown),
+                "Un email inexistente no debe revelar su ausencia con una excepción");
+        assertTrue(otpTokenRepository.findAll().stream().anyMatch(t -> unknown.equals(t.getTarget())),
+                "Se crea el token para ambos casos (trabajo uniforme) aunque no se envíe el email");
+    }
+
+    @Test
+    void resetPasswordCambiaLaContrasenaConUnOtpValido() {
+        String email = uniqueEmail("reset");
+        User user = createUser(email, "vieja123");
+        authService.requestPasswordReset(email);
+        String code = latestOtpCode(email);
+
+        authService.resetPassword(email, code, "nueva123");
+
+        User reloaded = userRepository.findById(user.getId()).orElseThrow();
+        assertTrue(passwordEncoder.matches("nueva123", reloaded.getPassword()),
+                "La contraseña debe quedar actualizada");
+
+        assertThrows(BadRequestException.class, () -> authService.resetPassword(email, code, "otra123"),
+                "El OTP es de un solo uso");
+    }
+
+    @Test
+    void registerConOtpVerificadoCreaCuentaVerificada() {
+        String email = uniqueEmail("register-verified");
+        authService.requestRegistrationOtp(email, "secret123");
+        String code = latestOtpCode(email);
+
+        AuthService.AuthResult result = authService.register(
+                RegisterRequestDto.builder().email(email).password("secret123").otpCode(code).build(),
+                "JUnit", "127.0.0.1");
+
+        assertNotNull(result.accessToken(), "Debe emitirse un access token al registrar");
+        User user = userRepository.findByEmail(email).orElseThrow();
+        assertTrue(Boolean.TRUE.equals(user.getEmailVerified()), "La cuenta debe quedar verificada");
+    }
+
+    @Test
+    void requestRegistrationOtpConPasswordComunEsRechazadoSinEmitirOtp() {
+        String email = uniqueEmail("otp-common");
+
+        assertThrows(BadRequestException.class,
+                () -> authService.requestRegistrationOtp(email, "password123"),
+                "Una contraseña común no debe permitir solicitar el OTP");
+
+        assertTrue(otpTokenRepository.findAll().stream()
+                        .noneMatch(token -> email.equals(token.getTarget())),
+                "No debe haberse creado ningún OTP con una contraseña rechazada");
+    }
+
+    @Test
+    void loginDeCuentaNoVerificadaEsRechazado() {
+        String email = uniqueEmail("unverified");
+        userRepository.save(User.builder()
+                .email(email)
+                .password(passwordEncoder.encode("secret123"))
+                .emailVerified(false)
+                .build());
+
+        assertThrows(UnauthorizedException.class, () -> authService.login(
+                LoginRequestDto.builder().email(email).password("secret123").build(), "JUnit", "127.0.0.1"));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void resetPasswordRevocaLasSesionesActivas() {
+        String email = uniqueEmail("reset-revoke");
+        User user = createUser(email, "vieja123");
+        RefreshTokenService.RefreshTokenPair pair = refreshTokenService.issue(user, "JUnit", "127.0.0.1");
+
+        authService.requestPasswordReset(email);
+        String code = latestOtpCode(email);
+        authService.resetPassword(email, code, "nueva123");
+
+        assertTrue(refreshTokenService.rotate(pair.rawToken(), "JUnit", "127.0.0.1").isEmpty(),
+                "Tras resetear la contraseña, las sesiones previas deben quedar invalidadas");
+    }
+}

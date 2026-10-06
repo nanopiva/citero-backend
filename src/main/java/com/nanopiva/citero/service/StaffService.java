@@ -1,0 +1,310 @@
+package com.nanopiva.citero.service;
+
+import com.nanopiva.citero.dto.business.StaffCreateRequestDto;
+import com.nanopiva.citero.dto.business.StaffResponseDto;
+import com.nanopiva.citero.dto.business.StaffUpdateRequestDto;
+import com.nanopiva.citero.dto.business.ServiceResponseDto;
+import com.nanopiva.citero.entity.Business;
+import com.nanopiva.citero.entity.Service;
+import com.nanopiva.citero.entity.Staff;
+import com.nanopiva.citero.entity.User;
+import com.nanopiva.citero.exception.BadRequestException;
+import com.nanopiva.citero.exception.ForbiddenException;
+import com.nanopiva.citero.exception.DuplicateResourceException;
+import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.repository.AppointmentRepository;
+import com.nanopiva.citero.repository.BusinessRepository;
+import com.nanopiva.citero.repository.ServiceRepository;
+import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.util.Emails;
+import com.nanopiva.citero.util.StaffUtils;
+
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+@org.springframework.stereotype.Service
+public class StaffService {
+
+    private final StaffRepository staffRepository;
+    private final BusinessRepository businessRepository;
+    private final UserRepository userRepository;
+    private final ServiceRepository serviceRepository;
+    private final StaffNotificationService staffNotificationService;
+    private final AppointmentRepository appointmentRepository;
+
+    public StaffService(StaffRepository staffRepository,
+                        BusinessRepository businessRepository,
+                        UserRepository userRepository,
+                        ServiceRepository serviceRepository,
+                        StaffNotificationService staffNotificationService,
+                        AppointmentRepository appointmentRepository) {
+        this.staffRepository = staffRepository;
+        this.businessRepository = businessRepository;
+        this.userRepository = userRepository;
+        this.serviceRepository = serviceRepository;
+        this.staffNotificationService = staffNotificationService;
+        this.appointmentRepository = appointmentRepository;
+    }
+
+    @Transactional
+    public StaffResponseDto createStaff(Long businessId, Long ownerId, StaffCreateRequestDto requestDto) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+
+        if (!business.getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para agregar empleados a este negocio.");
+        }
+
+        // Email normalizado para evitar duplicados por mayúsculas/espacios.
+        String email = Emails.normalize(requestDto.getEmail());
+
+        Optional<User> existingUser = userRepository.findByEmail(email);
+        boolean isRegistered = existingUser.isPresent();
+        // El dueño que se agrega a sí mismo no necesita invitación ni confirmación:
+        // ya es miembro del negocio y su cuenta está activa.
+        boolean isOwnerSelf = isRegistered
+                && business.getOwner().getId().equals(existingUser.get().getId());
+
+        Staff staff;
+        if (isRegistered) {
+            User user = existingUser.get();
+            if (staffRepository.existsByUserAndBusiness(user, business)) {
+                throw new DuplicateResourceException("El usuario ya está registrado como empleado en este local.");
+            }
+            // Si existía una invitación pendiente para ese email, se reutiliza el
+            // perfil (en vez de crear un duplicado) y se vincula al usuario.
+            staff = staffRepository.findByContactEmailAndBusiness(email, business)
+                    .orElseGet(Staff::new);
+            staff.setBusiness(business);
+            staff.setCustomName(requestDto.getCustomName());
+            staff.setUser(user);
+            staff.setContactEmail(null);
+        } else {
+            if (staffRepository.existsByContactEmailAndBusiness(email, business)) {
+                throw new DuplicateResourceException("Ya existe un perfil pendiente con este correo en el local.");
+            }
+            staff = new Staff();
+            staff.setBusiness(business);
+            staff.setCustomName(requestDto.getCustomName());
+            staff.setContactEmail(email);
+        }
+
+        if (requestDto.getServiceIds() != null && !requestDto.getServiceIds().isEmpty()) {
+            Set<Service> services = getServicesByIds(business, requestDto.getServiceIds());
+            staff.setServices(services);
+        }
+
+        Staff savedStaff = staffRepository.save(staff);
+
+        // Notificación asíncrona (no bloquea la respuesta).
+        // Se omite si el dueño se agrega a sí mismo: no hay nada que invitar ni confirmar.
+        if (!isOwnerSelf) {
+            staffNotificationService.sendStaffInvitation(
+                    email,
+                    requestDto.getCustomName(),
+                    business.getName(),
+                    isRegistered
+            );
+        }
+
+        return mapToResponseDto(savedStaff);
+    }
+
+    /**
+     * Alta del dueño como profesional de su propio negocio.
+     * No envía invitación ni requiere confirmación: el dueño ya es miembro activo.
+     */
+    @Transactional
+    public StaffResponseDto addOwnerAsStaff(Long businessId, Long ownerId, StaffCreateRequestDto requestDto) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+
+        if (!business.getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para agregarte a este negocio.");
+        }
+
+        User owner = business.getOwner();
+        if (staffRepository.existsByUserAndBusiness(owner, business)) {
+            throw new DuplicateResourceException("Ya formás parte del equipo de este negocio.");
+        }
+
+        Staff staff = new Staff();
+        staff.setBusiness(business);
+        // Alias por defecto: el nombre del usuario si no se indicó uno. Si tampoco tiene nombre,
+        // StaffUtils.displayName cae al prefijo del email.
+        String customName = requestDto.getCustomName();
+        staff.setCustomName(customName != null && !customName.isBlank() ? customName : owner.getName());
+        staff.setUser(owner);
+
+        if (requestDto.getServiceIds() != null && !requestDto.getServiceIds().isEmpty()) {
+            staff.setServices(getServicesByIds(business, requestDto.getServiceIds()));
+        }
+
+        return mapToResponseDto(staffRepository.save(staff));
+    }
+
+    /**
+     * Lista el equipo de un negocio. El email de cada profesional solo se incluye si
+     * el solicitante autenticado es el dueño (evita exponer PII en el catálogo público).
+     *
+     * @param businessId id del negocio
+     * @param viewerId   id del usuario autenticado, o {@code null} si es anónimo
+     */
+    @Transactional(readOnly = true)
+    public List<StaffResponseDto> getStaffByBusinessId(Long businessId, Long viewerId) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+        boolean includeEmail = viewerId != null && business.getOwner().getId().equals(viewerId);
+        return staffRepository.findByBusiness(business).stream()
+                .map(staff -> mapToResponseDto(staff, includeEmail))
+                .toList();
+    }
+
+    @Transactional
+    public StaffResponseDto updateStaff(Long staffId, Long ownerId, StaffUpdateRequestDto requestDto) {
+        Staff staff = staffRepository.findById(staffId)
+                .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado con ID: " + staffId));
+
+        if (!staff.getBusiness().getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para modificar este empleado.");
+        }
+
+        if (requestDto.getCustomName() != null) {
+            staff.setCustomName(requestDto.getCustomName());
+        }
+
+        if (requestDto.getServiceIds() != null) {
+            Set<Service> services = getServicesByIds(staff.getBusiness(), requestDto.getServiceIds());
+            staff.setServices(services);
+        }
+
+        Staff updatedStaff = staffRepository.save(staff);
+        return mapToResponseDto(updatedStaff);
+    }
+
+    /**
+     * Reenvía la invitación a un profesional que todavía no creó su cuenta.
+     */
+    @Transactional
+    public void resendInvitation(Long staffId, Long ownerId) {
+        Staff staff = staffRepository.findById(staffId)
+                .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado con ID: " + staffId));
+
+        if (!staff.getBusiness().getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para gestionar este empleado.");
+        }
+        if (staff.getUser() != null) {
+            throw new BadRequestException("Este profesional ya tiene una cuenta vinculada.");
+        }
+
+        staffNotificationService.sendStaffInvitation(
+                staff.getContactEmail(), staff.getCustomName(), staff.getBusiness().getName(), false);
+    }
+
+    @Transactional
+    public void deleteStaff(Long staffId, Long ownerId) {
+        Staff staff = staffRepository.findById(staffId)
+                .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado con ID: " + staffId));
+
+        if (!staff.getBusiness().getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para eliminar este empleado.");
+        }
+
+        // Borrado explícito de los turnos del profesional (además del cascade).
+        appointmentRepository.deleteAll(appointmentRepository.findByStaff(staff));
+        staffRepository.delete(staff);
+    }
+
+    /**
+     * Un profesional se elimina a sí mismo del equipo de un negocio (siempre que
+     * exista un perfil de staff vinculado a su usuario en ese negocio).
+     */
+    @Transactional
+    public void leaveStaff(Long businessId, Long userId) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado con ID: " + userId));
+
+        Staff staff = staffRepository.findByUserAndBusiness(user, business)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No formás parte del equipo de este negocio."));
+
+        appointmentRepository.deleteAll(appointmentRepository.findByStaff(staff));
+        staffRepository.delete(staff);
+    }
+
+    @Transactional
+    public StaffResponseDto assignServicesToStaff(Long staffId, Long ownerId, Set<Long> serviceIds) {
+        Staff staff = staffRepository.findById(staffId)
+                .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado con ID: " + staffId));
+
+        if (!staff.getBusiness().getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para asignar servicios a este empleado.");
+        }
+
+        Set<Service> services = getServicesByIds(staff.getBusiness(), serviceIds);
+        staff.setServices(services);
+        Staff updatedStaff = staffRepository.save(staff);
+        return mapToResponseDto(updatedStaff);
+    }
+
+    private Set<Service> getServicesByIds(Business business, Set<Long> serviceIds) {
+        if (serviceIds == null) {
+            throw new BadRequestException("La lista de servicios es obligatoria.");
+        }
+        List<Service> found = serviceRepository.findAllById(serviceIds);
+        if (found.size() != serviceIds.size()) {
+            Set<Long> foundIds = found.stream().map(Service::getId).collect(Collectors.toSet());
+            Set<Long> missing = new HashSet<>(serviceIds);
+            missing.removeAll(foundIds);
+            throw new BadRequestException("Servicio(s) inexistente(s): " + missing + ".");
+        }
+        return found.stream()
+                .peek(service -> {
+                    if (!service.getBusiness().getId().equals(business.getId())) {
+                        throw new BadRequestException("El servicio con ID " + service.getId() + " no pertenece a este negocio.");
+                    }
+                })
+                .collect(Collectors.toSet());
+    }
+
+    private StaffResponseDto mapToResponseDto(Staff staff) {
+        return mapToResponseDto(staff, true);
+    }
+
+    /**
+     * @param includeEmail {@code true} solo en contextos owner-only; {@code false} para
+     *                     el catálogo público, donde el email no debe exponerse.
+     */
+    private StaffResponseDto mapToResponseDto(Staff staff, boolean includeEmail) {
+        return StaffResponseDto.builder()
+                .id(staff.getId())
+                .customName(StaffUtils.displayName(staff))
+                .userEmail(includeEmail ? StaffUtils.email(staff) : null)
+                .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
+                .services(mapServicesToDto(staff.getServices()))
+                .build();
+    }
+
+    private Set<ServiceResponseDto> mapServicesToDto(Set<Service> services) {
+        if (services == null || services.isEmpty()) {
+            return new HashSet<>();
+        }
+        return services.stream()
+                .map(service -> ServiceResponseDto.builder()
+                        .id(service.getId())
+                        .name(service.getName())
+                        .durationMinutes(service.getDurationMinutes())
+                        .price(service.getPrice())
+                        .build())
+                .collect(Collectors.toSet());
+    }
+}

@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: citero-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-citero}
+      POSTGRES_USER: ${POSTGRES_USER:-citero}
+      # Sin default: definí POSTGRES_PASSWORD en el .env (no versionado).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definí POSTGRES_PASSWORD en el .env}
+    ports:
+      # Sólo accesible desde localhost. Comentá esta línea sólo si necesitás acceso externo.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - citero-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-citero} -d ${POSTGRES_DB:-citero}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  citero-postgres-data:

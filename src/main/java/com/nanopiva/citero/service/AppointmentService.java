@@ -1,0 +1,562 @@
+package com.nanopiva.citero.service;
+
+import com.nanopiva.citero.dto.appointment.AppointmentCreateRequestDto;
+import com.nanopiva.citero.dto.appointment.AppointmentResponseDto;
+import com.nanopiva.citero.dto.appointment.PublicAppointmentResponseDto;
+import com.nanopiva.citero.dto.business.ServiceResponseDto;
+import com.nanopiva.citero.dto.business.StaffResponseDto;
+import com.nanopiva.citero.dto.user.UserResponseDto;
+import com.nanopiva.citero.entity.*;
+import com.nanopiva.citero.exception.BadRequestException;
+import com.nanopiva.citero.exception.ForbiddenException;
+import com.nanopiva.citero.exception.ResourceNotFoundException;
+import com.nanopiva.citero.exception.TooManyRequestsException;
+import com.nanopiva.citero.security.RateLimitStore;
+import com.nanopiva.citero.repository.AppointmentRepository;
+import com.nanopiva.citero.repository.BusinessRepository;
+import com.nanopiva.citero.repository.ServiceRepository;
+import com.nanopiva.citero.repository.StaffRepository;
+import com.nanopiva.citero.repository.UserRepository;
+import com.nanopiva.citero.security.jwt.PublicLinkTokenService;
+import com.nanopiva.citero.util.BusinessTime;
+import com.nanopiva.citero.util.StaffUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Duration;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+
+@Service
+public class AppointmentService {
+
+    private final AppointmentRepository appointmentRepository;
+    private final UserRepository userRepository;
+    private final StaffRepository staffRepository;
+    private final ServiceRepository serviceRepository;
+    private final BusinessRepository businessRepository;
+    private final UserService userService;
+    private final AvailabilityService availabilityService;
+    private final BusinessClientService businessClientService;
+    private final OtpService otpService;
+    private final AppointmentNotificationService notificationService;
+    private final PublicLinkTokenService publicLinkTokenService;
+    private final RateLimitStore rateLimitStore;
+    private final String frontendUrl;
+
+    @Value("${citero.rate-limit.booking-global-per-minute:500}")
+    private int bookingGlobalPerMinute;
+
+    // Rango amplio para cuando no se filtra por fecha (evita parámetros nulos en la query).
+    private static final LocalDateTime RANGE_START = LocalDateTime.of(1900, 1, 1, 0, 0);
+    private static final LocalDateTime RANGE_END = LocalDateTime.of(2200, 1, 1, 0, 0);
+
+    // Caps anti-abuso de la reserva (además del límite por IP).
+    private static final int MAX_BOOKINGS_PER_EMAIL_PER_DAY = 5;
+    private static final Duration BOOKING_EMAIL_WINDOW = Duration.ofDays(1);
+    private static final int MAX_BOOKINGS_PER_BUSINESS_PER_HOUR = 200;
+    private static final Duration BOOKING_BUSINESS_WINDOW = Duration.ofHours(1);
+
+    // Transiciones permitidas. Los estados terminales (COMPLETED, NO_SHOW, CANCELLED) no
+    // tienen salida por este endpoint.
+    private static final Map<Appointment.AppointmentStatus, Set<Appointment.AppointmentStatus>> ALLOWED_TRANSITIONS =
+            Map.of(
+                    Appointment.AppointmentStatus.CONFIRMED, Set.of(
+                            Appointment.AppointmentStatus.COMPLETED,
+                            Appointment.AppointmentStatus.NO_SHOW,
+                            Appointment.AppointmentStatus.CANCELLED
+                    )
+            );
+
+    public AppointmentService(AppointmentRepository appointmentRepository,
+                              UserRepository userRepository,
+                              StaffRepository staffRepository,
+                              ServiceRepository serviceRepository,
+                              BusinessRepository businessRepository,
+                              UserService userService,
+                              AvailabilityService availabilityService,
+                              BusinessClientService businessClientService,
+                              OtpService otpService,
+                              AppointmentNotificationService notificationService,
+                              PublicLinkTokenService publicLinkTokenService,
+                              RateLimitStore rateLimitStore,
+                              @Value("${citero.frontend.url}") String frontendUrl) {
+        this.appointmentRepository = appointmentRepository;
+        this.userRepository = userRepository;
+        this.staffRepository = staffRepository;
+        this.serviceRepository = serviceRepository;
+        this.businessRepository = businessRepository;
+        this.userService = userService;
+        this.availabilityService = availabilityService;
+        this.businessClientService = businessClientService;
+        this.otpService = otpService;
+        this.notificationService = notificationService;
+        this.publicLinkTokenService = publicLinkTokenService;
+        this.rateLimitStore = rateLimitStore;
+        this.frontendUrl = frontendUrl;
+    }
+
+    @Transactional
+    public AppointmentResponseDto createAppointment(Long authenticatedUserId, AppointmentCreateRequestDto dto) {
+        com.nanopiva.citero.entity.Service service = serviceRepository.findById(dto.getServiceId())
+                .orElseThrow(() -> new ResourceNotFoundException("Servicio no encontrado."));
+
+        Business business = service.getBusiness();
+        BusinessConfig config = requireConfig(business);
+
+        // Resolver el profesional: el elegido por el cliente o uno libre ("Cualquier profesional").
+        Staff staff;
+        if (dto.getStaffId() != null) {
+            // Lock pesimista sobre el profesional para serializar reservas concurrentes (evita doble reserva).
+            staff = staffRepository.findByIdForUpdate(dto.getStaffId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado."));
+
+            if (!staff.getBusiness().getId().equals(business.getId())) {
+                throw new BadRequestException("El empleado seleccionado no pertenece al negocio del servicio.");
+            }
+            if (!staff.getServices().contains(service)) {
+                throw new BadRequestException("El empleado seleccionado no realiza este servicio.");
+            }
+
+            // Valida futuro, grilla de 15 min, horario de atención y solapamiento.
+            availabilityService.validateSlotForBooking(staff, service, dto.getStartTime());
+        } else {
+            // "Cualquier profesional": el backend elige un profesional libre para la franja.
+            staff = availabilityService.assignAvailableStaff(business, service, dto.getStartTime());
+        }
+
+        User client = resolveClient(authenticatedUserId, dto, business, config);
+
+        if (businessClientService.isClientBlocked(client.getId(), business.getId())) {
+            throw new BadRequestException("No puedes reservar en este negocio debido a ausencias o cancelaciones previas.");
+        }
+
+        // Caps anti-abuso: global (system-wide), por negocio y por email.
+        if (!rateLimitStore.tryConsume("booking-global", bookingGlobalPerMinute, Duration.ofMinutes(1))) {
+            throw new TooManyRequestsException(
+                    "El servicio está saturado. Esperá un momento e intentá de nuevo.");
+        }
+        String emailKey = client.getEmail() == null
+                ? "id:" + client.getId()
+                : client.getEmail().toLowerCase(Locale.ROOT);
+        if (!rateLimitStore.tryConsume("booking-email:" + emailKey,
+                MAX_BOOKINGS_PER_EMAIL_PER_DAY, BOOKING_EMAIL_WINDOW)) {
+            throw new TooManyRequestsException(
+                    "Demasiadas reservas con este email. Esperá e intentá de nuevo más tarde.");
+        }
+        if (!rateLimitStore.tryConsume("booking-biz:" + business.getId(),
+                MAX_BOOKINGS_PER_BUSINESS_PER_HOUR, BOOKING_BUSINESS_WINDOW)) {
+            throw new TooManyRequestsException(
+                    "Este negocio recibió demasiadas reservas en poco tiempo. Intentá más tarde.");
+        }
+
+        Appointment appointment = Appointment.builder()
+                .client(client)
+                .staff(staff)
+                .service(service)
+                .startTime(dto.getStartTime())
+                .endTime(dto.getStartTime().plusMinutes(service.getDurationMinutes()))
+                .status(Appointment.AppointmentStatus.CONFIRMED)
+                .build();
+
+        Appointment savedAppointment = appointmentRepository.save(appointment);
+
+        // Disparar notificaciones por email (asíncrono, no bloquea la respuesta HTTP)
+        notificationService.sendAppointmentConfirmation(savedAppointment, frontendUrl);
+
+        return mapToResponseDto(savedAppointment);
+    }
+
+    @Transactional
+    public AppointmentResponseDto cancelByClient(Long appointmentId, Long clientId) {
+        Appointment appointment = getAppointmentForUpdate(appointmentId);
+        if (!appointment.getClient().getId().equals(clientId)) {
+            throw new ForbiddenException("No tienes permiso para cancelar este turno.");
+        }
+        // Idempotente: si ya está cancelado, no se repiten efectos ni notificaciones.
+        if (appointment.getStatus() == Appointment.AppointmentStatus.CANCELLED) {
+            return mapToResponseDto(appointment);
+        }
+        validateCancellable(appointment);
+        // Marca informativa: ¿la cancelación fue dentro de la tolerancia? (sin sanción)
+        appointment.setCancelledLate(isLateCancellation(appointment));
+        appointment.setStatus(Appointment.AppointmentStatus.CANCELLED);
+        Appointment savedAppointment = appointmentRepository.save(appointment);
+
+        // Disparar notificaciones de cancelación
+        notificationService.sendAppointmentCancellation(savedAppointment, frontendUrl);
+
+        return mapToResponseDto(savedAppointment);
+    }
+
+    /** true si la cancelación cae dentro de la tolerancia (horas hasta el inicio < tolerancia). */
+    private boolean isLateCancellation(Appointment appointment) {
+        BusinessConfig config = requireConfig(appointment.getStaff().getBusiness());
+        long hoursUntilStart = Duration.between(
+                BusinessTime.now(appointment.getStaff().getBusiness()), appointment.getStartTime()).toHours();
+        return hoursUntilStart < config.getCancellationToleranceHours();
+    }
+
+
+    @Transactional
+    public AppointmentResponseDto cancelByBusiness(Long appointmentId, Long ownerId) {
+        Appointment appointment = getAppointmentAndValidateOwner(appointmentId, ownerId);
+
+        // Idempotencia: si ya está cancelado, no se re-notifica ni se vuelve a guardar.
+        if (appointment.getStatus() == Appointment.AppointmentStatus.CANCELLED) {
+            return mapToResponseDto(appointment);
+        }
+        if (!canTransition(appointment.getStatus(), Appointment.AppointmentStatus.CANCELLED)) {
+            throw new BadRequestException("No se puede cancelar un turno en estado " + appointment.getStatus() + ".");
+        }
+
+        appointment.setStatus(Appointment.AppointmentStatus.CANCELLED);
+        Appointment savedAppointment = appointmentRepository.save(appointment);
+
+        // Notificar al cliente que el negocio canceló el turno (no se notifica al dueño, que fue quien canceló)
+        notificationService.sendAppointmentCancellationByBusiness(savedAppointment, frontendUrl);
+
+        return mapToResponseDto(savedAppointment);
+    }
+
+    @Transactional
+    public AppointmentResponseDto updateStatus(Long appointmentId, Long ownerId, Appointment.AppointmentStatus newStatus) {
+        if (newStatus == null) {
+            throw new BadRequestException("El nuevo estado es obligatorio.");
+        }
+        if (newStatus == Appointment.AppointmentStatus.CONFIRMED || newStatus == Appointment.AppointmentStatus.CANCELLED) {
+            throw new BadRequestException("Usa los endpoints específicos para confirmar o cancelar.");
+        }
+
+        Appointment appointment = getAppointmentAndValidateOwner(appointmentId, ownerId);
+
+        // Idempotencia: si el turno ya está en ese estado, no hay nada que hacer.
+        if (appointment.getStatus() == newStatus) {
+            return mapToResponseDto(appointment);
+        }
+
+        if (!canTransition(appointment.getStatus(), newStatus)) {
+            throw new BadRequestException(
+                    "No se puede cambiar el estado de " + appointment.getStatus() + " a " + newStatus + ".");
+        }
+
+        appointment.setStatus(newStatus);
+        return mapToResponseDto(appointmentRepository.save(appointment));
+    }
+
+    /**
+     * Devuelve los detalles básicos de un turno para mostrar en la página pública de gestión.
+     * No expone información sensible del cliente.
+     *
+     * <p>Para evitar enumerar turnos ajenos adivinando IDs, el acceso anónimo exige un
+     * token firmado válido (el que viaja en el link del email). Un usuario autenticado que
+     * sea el cliente del turno también puede verlo. Si no se autoriza, se responde 404
+     * (no 403) para no confirmar la existencia del turno.</p>
+     */
+    @Transactional(readOnly = true)
+    public PublicAppointmentResponseDto getPublicAppointmentDetails(Long appointmentId, String token, Long viewerUserId) {
+        Appointment appointment = appointmentRepository.findById(appointmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
+
+        if (!canAccessAppointment(appointment, token, viewerUserId)) {
+            throw new ResourceNotFoundException("Turno no encontrado.");
+        }
+
+        Business business = appointment.getStaff().getBusiness();
+        String staffDisplayName = StaffUtils.displayName(appointment.getStaff());
+        boolean ownedByViewer = viewerUserId != null
+                && appointment.getClient().getId().equals(viewerUserId);
+
+        return PublicAppointmentResponseDto.builder()
+                .id(appointment.getId())
+                .businessName(business.getName())
+                .slug(business.getSlug())
+                .timezone(business.getTimezone())
+                .serviceName(appointment.getService().getName())
+                .staffName(staffDisplayName)
+                .startTime(appointment.getStartTime())
+                .endTime(appointment.getEndTime())
+                .status(appointment.getStatus().name())
+                .address(business.getAddress() != null ? business.getAddress() : "Dirección no disponible")
+                .ownedByViewer(ownedByViewer)
+                .build();
+    }
+
+    /**
+     * Envía un OTP al email del cliente para autorizar la cancelación de un turno.
+     * Exige el token del link público (o ser el cliente autenticado) y que el email
+     * coincida con el cliente del turno, para no permitir email-bombing a terceros.
+     */
+    @Transactional
+    public void sendCancellationOtp(Long appointmentId, String token, Long viewerUserId, String email) {
+        // Accede a asociaciones LAZY del turno (client, staff.business).
+        Appointment appointment = appointmentRepository.findById(appointmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
+
+        if (!canAccessAppointment(appointment, token, viewerUserId)) {
+            throw new ResourceNotFoundException("Turno no encontrado.");
+        }
+
+        if (!appointment.getClient().getEmail().equalsIgnoreCase(email)) {
+            throw new BadRequestException("El email no coincide con el cliente del turno.");
+        }
+
+        validateCancellable(appointment);
+
+        otpService.generateAndSendOtp(email, OtpService.PURPOSE_CANCELLATION_VERIFICATION);
+
+    }
+
+    /**
+     * Autoriza el acceso a la gestión de un turno: token firmado válido para ese turno,
+     * o el usuario autenticado es el cliente del turno.
+     */
+    private boolean canAccessAppointment(Appointment appointment, String token, Long viewerUserId) {
+        if (viewerUserId != null && appointment.getClient().getId().equals(viewerUserId)) {
+            return true;
+        }
+        return publicLinkTokenService.validate(token)
+                .map(appointment.getId()::equals)
+                .orElse(false);
+    }
+
+    /**
+     * Cancela un turno validando la identidad del cliente mediante OTP.
+     * Marca la cancelación tardía (informativo) igual que cancelByClient.
+     */
+    @Transactional
+    public AppointmentResponseDto cancelByGuest(Long appointmentId, String email, String otpCode) {
+        Appointment appointment = getAppointmentForUpdate(appointmentId);
+
+        if (!appointment.getClient().getEmail().equalsIgnoreCase(email)) {
+            throw new BadRequestException("El email no coincide con el cliente del turno.");
+        }
+
+        // Idempotente: si ya está cancelado no se repite el efecto ni se exige de nuevo
+        // el OTP (ya consumido). Se omite el cliente de la respuesta por ser endpoint público.
+        if (appointment.getStatus() == Appointment.AppointmentStatus.CANCELLED) {
+            return mapToResponseDto(appointment, false);
+        }
+
+        validateCancellable(appointment);
+
+        // Validar OTP con propósito específico de cancelación
+        otpService.verifyOtp(email, otpCode, OtpService.PURPOSE_CANCELLATION_VERIFICATION);
+
+        // Marca informativa: ¿la cancelación fue dentro de la tolerancia? (sin sanción)
+        appointment.setCancelledLate(isLateCancellation(appointment));
+        appointment.setStatus(Appointment.AppointmentStatus.CANCELLED);
+        Appointment savedAppointment = appointmentRepository.save(appointment);
+
+        // Disparar notificaciones de cancelación
+        notificationService.sendAppointmentCancellation(savedAppointment, frontendUrl);
+
+        // Endpoint público: se omite el cliente de la respuesta (PII).
+        return mapToResponseDto(savedAppointment, false);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<AppointmentResponseDto> getAppointmentsByClient(Long clientId, Pageable pageable) {
+        User client = userRepository.findById(clientId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cliente no encontrado."));
+        return appointmentRepository.findByClient(client, pageable).map(this::mapToResponseDto);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<AppointmentResponseDto> getAppointments(Long userId, Long businessId, Long staffId,
+                                                        LocalDate date, Appointment.AppointmentStatus status,
+                                                        Pageable pageable) {
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado con ID: " + businessId));
+        boolean isOwner = business.getOwner().getId().equals(userId);
+        if (!isOwner && !isStaffOf(userId, business)) {
+            throw new ForbiddenException("No tienes permiso para ver la agenda de este negocio.");
+        }
+        // El staff sólo ve la agenda completa si el negocio lo habilita; si no, se
+        // restringe a sus propios turnos (aunque pida otro staffId).
+        if (!isOwner) {
+            BusinessConfig config = requireConfig(business);
+            if (!Boolean.TRUE.equals(config.getStaffCanViewFullAgenda())) {
+                User caller = userRepository.findById(userId)
+                        .orElseThrow(() -> new ForbiddenException("No tienes permiso para ver la agenda de este negocio."));
+                staffId = staffRepository.findByUserAndBusiness(caller, business)
+                        .orElseThrow(() -> new ForbiddenException("No tienes permiso para ver la agenda de este negocio."))
+                        .getId();
+            }
+        }
+        if (staffId != null) {
+            Staff staff = staffRepository.findById(staffId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Empleado no encontrado."));
+            if (!staff.getBusiness().getId().equals(businessId)) {
+                throw new BadRequestException("El empleado no pertenece a este negocio.");
+            }
+        }
+        LocalDateTime start = date != null ? date.atStartOfDay() : RANGE_START;
+        LocalDateTime end = date != null ? date.plusDays(1).atStartOfDay() : RANGE_END;
+        return appointmentRepository.searchByBusiness(
+                        businessId, staffId != null, staffId, start, end, status != null, status, pageable)
+                .map(this::mapToResponseDto);
+    }
+
+    /**
+     * Indica si el usuario pertenece al equipo del negocio. El dueño y el staff pueden
+     * consultar la agenda completa del local.
+     */
+    private boolean isStaffOf(Long userId, Business business) {
+        return userRepository.findById(userId)
+                .flatMap(user -> staffRepository.findByUserAndBusiness(user, business))
+                .isPresent();
+    }
+
+    @Transactional(readOnly = true)
+    public Page<AppointmentResponseDto> getAppointmentsForStaff(Long userId, Long businessId, LocalDate date,
+                                                                Pageable pageable) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+        Business business = businessRepository.findById(businessId)
+                .orElseThrow(() -> new ResourceNotFoundException("Negocio no encontrado"));
+        Staff staff = staffRepository.findByUserAndBusiness(user, business)
+                .orElseThrow(() -> new BadRequestException("El usuario no está registrado como empleado en este negocio."));
+        LocalDateTime start = date != null ? date.atStartOfDay() : RANGE_START;
+        LocalDateTime end = date != null ? date.plusDays(1).atStartOfDay() : RANGE_END;
+        return appointmentRepository.searchByBusiness(
+                        businessId, true, staff.getId(), start, end, false, null, pageable)
+                .map(this::mapToResponseDto);
+    }
+
+    /**
+     * Valida que un turno pueda ser cancelado (no haya pasado y esté confirmado).
+     * Lógica compartida entre cancelByClient y cancelByGuest.
+     */
+    private void validateCancellable(Appointment appointment) {
+        if (appointment.getStartTime().isBefore(BusinessTime.now(appointment.getStaff().getBusiness()))) {
+            throw new BadRequestException("No puedes cancelar un turno que ya ha pasado.");
+        }
+        if (appointment.getStatus() != Appointment.AppointmentStatus.CONFIRMED) {
+            throw new BadRequestException("Este turno ya ha sido cancelado o completado.");
+        }
+    }
+
+    private User resolveClient(Long authenticatedUserId, AppointmentCreateRequestDto dto,
+                               Business business, BusinessConfig config) {
+        boolean hasGuestEmail = dto.getGuestEmail() != null && !dto.getGuestEmail().isBlank();
+
+        if (authenticatedUserId != null) {
+            // El dueño o el staff pueden dar de alta un turno para un cliente (email indicado).
+            boolean isTeam = business.getOwner().getId().equals(authenticatedUserId)
+                    || isStaffOf(authenticatedUserId, business);
+            if (hasGuestEmail && isTeam) {
+                return userService.findOrCreateGuestUser(dto.getGuestEmail(), dto.getGuestPhone(), dto.getGuestName());
+            }
+            return userService.getUserEntityById(authenticatedUserId);
+        }
+
+        if (config.getReservationMode() == BusinessConfig.ReservationMode.PUBLIC) {
+            if (!hasGuestEmail) {
+                throw new BadRequestException("El email es obligatorio para reservar como invitado.");
+            }
+            return userService.findOrCreateGuestUser(dto.getGuestEmail(), dto.getGuestPhone(), dto.getGuestName());
+        }
+        if (config.getReservationMode() == BusinessConfig.ReservationMode.AUTHENTICATED) {
+            if (!hasGuestEmail) {
+                throw new BadRequestException("El email es obligatorio para verificar tu identidad.");
+            }
+            if (dto.getOtpCode() == null || dto.getOtpCode().isBlank()) {
+                throw new BadRequestException("Debes ingresar el código OTP enviado a tu email para reservar en este negocio.");
+            }
+            otpService.verifyOtp(dto.getGuestEmail(), dto.getOtpCode(), OtpService.PURPOSE_GUEST_VERIFICATION);
+            return userService.findOrCreateGuestUser(dto.getGuestEmail(), dto.getGuestPhone(), dto.getGuestName());
+        }
+        throw new BadRequestException("Modo de reserva inválido.");
+    }
+
+    private Appointment getAppointmentAndValidateOwner(Long appointmentId, Long ownerId) {
+        Appointment appointment = getAppointmentForUpdate(appointmentId);
+        if (!appointment.getStaff().getBusiness().getOwner().getId().equals(ownerId)) {
+            throw new ForbiddenException("No tienes permiso para modificar este turno.");
+        }
+        return appointment;
+    }
+
+    /**
+     * Carga el turno adquiriendo un lock pesimista (SELECT ... FOR UPDATE) para que los
+     * cambios de estado sobre un mismo turno se serialicen y no se dupliquen efectos
+     * (p. ej. dobles clics).
+     */
+    private Appointment getAppointmentForUpdate(Long appointmentId) {
+        return appointmentRepository.findByIdForUpdate(appointmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("Turno no encontrado."));
+    }
+
+    private boolean canTransition(Appointment.AppointmentStatus from, Appointment.AppointmentStatus to) {
+        return ALLOWED_TRANSITIONS.getOrDefault(from, Set.of()).contains(to);
+    }
+
+    /** Config del negocio; falla si no está inicializada. */
+    private BusinessConfig requireConfig(Business business) {
+        BusinessConfig config = business.getConfig();
+        if (config == null) {
+            throw new ResourceNotFoundException(
+                    "La configuración del negocio no está disponible.");
+        }
+        return config;
+    }
+
+    private AppointmentResponseDto mapToResponseDto(Appointment appointment) {
+        return mapToResponseDto(appointment, true);
+    }
+
+    /**
+     * @param includeClient {@code false} en respuestas públicas (cancelación de
+     *                      invitado) para no exponer el email/teléfono del cliente.
+     */
+    private AppointmentResponseDto mapToResponseDto(Appointment appointment, boolean includeClient) {
+        return AppointmentResponseDto.builder()
+                .id(appointment.getId())
+                .businessName(appointment.getService().getBusiness().getName())
+                .timezone(appointment.getService().getBusiness().getTimezone())
+                .client(includeClient ? mapUserToDto(appointment.getClient()) : null)
+                .staff(mapStaffToDto(appointment.getStaff()))
+                .service(mapServiceToDto(appointment.getService()))
+                .startTime(appointment.getStartTime())
+                .endTime(appointment.getEndTime())
+                .status(appointment.getStatus().name())
+                .cancelledLate(appointment.getCancelledLate())
+                .createdAt(appointment.getCreatedAt())
+                .build();
+    }
+
+    private UserResponseDto mapUserToDto(User user) {
+        return UserResponseDto.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .phone(user.getPhone())
+                .name(user.getName())
+                .createdAt(user.getCreatedAt())
+                .build();
+    }
+
+    private StaffResponseDto mapStaffToDto(Staff staff) {
+        // No se expone el email del staff (el DTO de turno se devuelve en el POST público de reserva).
+        return StaffResponseDto.builder()
+                .id(staff.getId())
+                .customName(StaffUtils.displayName(staff))
+                .hasClaimedAccount(StaffUtils.hasClaimedAccount(staff))
+                .build();
+    }
+
+    private ServiceResponseDto mapServiceToDto(com.nanopiva.citero.entity.Service service) {
+        return ServiceResponseDto.builder()
+                .id(service.getId())
+                .name(service.getName())
+                .durationMinutes(service.getDurationMinutes())
+                .price(service.getPrice())
+                .build();
+    }
+}
